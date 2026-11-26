@@ -32,6 +32,10 @@ vi.mock("@/app/hooks/useWorkspaceSettingsScope", async (importOriginal) => ({
 vi.mock("@/app/components/settings/PersonalProviderKeys", () => ({
     PersonalProviderKeys: () => <p>Your keys</p>,
 }));
+// Has its own tests; it only appears on a deployment that enables it.
+vi.mock("@/app/components/settings/ClaudeSubscriptionSection", () => ({
+    ClaudeSubscriptionSection: () => null,
+}));
 
 beforeEach(() => {
     state.scope = { kind: "personal" };
