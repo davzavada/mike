@@ -704,9 +704,15 @@ export async function streamAiSdk(
   let lastRawFinishReason: string | undefined;
 
   try {
+    // The provider's own web search does not exist on an agent model. Say so
+    // to the interface and to the model, whose prompt otherwise promises it.
+    const searchUnavailable = !!config.agentModel && !!params.providerWebSearch;
+    if (searchUnavailable) emitWebSearch({ kind: "unavailable" });
     const model = config.agentModel
       ? await config.agentModel({
-          systemPrompt: params.systemPrompt,
+          systemPrompt: searchUnavailable
+            ? `${params.systemPrompt}\n\nWeb search is unavailable for this answer.`
+            : params.systemPrompt,
           maxTurns: maxIterations,
           tools: toAgentTools(
             params.tools ?? [],

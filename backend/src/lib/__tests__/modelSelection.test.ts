@@ -230,6 +230,38 @@ describe("resolveEffectiveChatModel", () => {
         });
     });
 
+    it("runs a Claude model on the person's connected subscription, without a key", async () => {
+        const subscription = { claudeCode: { configDir: "/data/claude/user-1" } };
+        await expect(
+            resolveEffectiveChatModel({
+                requested: "claude-opus-5-5",
+                apiKeys: subscription,
+                userId: "user-1",
+                db,
+            }),
+        ).resolves.toMatchObject({ ok: true, model: "claude-opus-5-5" });
+        expect(hasApiKeyForModel("claude-opus-5-5", subscription)).toBe(true);
+        // Only Claude, and never a provider the person switched off.
+        expect(hasApiKeyForModel("gpt-6-luna", subscription)).toBe(false);
+        expect(
+            hasApiKeyForModel("claude-opus-5-5", {
+                ...subscription,
+                disabledProviders: ["claude"],
+            }),
+        ).toBe(false);
+    });
+
+    it("still asks for a key when no subscription is connected", async () => {
+        await expect(
+            resolveEffectiveChatModel({
+                requested: "claude-opus-5-5",
+                apiKeys: {},
+                userId: "user-1",
+                db,
+            }),
+        ).resolves.toMatchObject({ ok: false, code: "missing_api_key" });
+    });
+
     it("requires selection when neither persisted model is usable", async () => {
         await expect(
             resolveEffectiveChatModel({
