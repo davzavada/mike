@@ -98,6 +98,24 @@ describe("agent model", () => {
     ]);
   });
 
+  it("reports the provider's web search as unavailable, to the model too", async () => {
+    const stub = await agent([]);
+    const events: unknown[] = [];
+    await streamAiSdk(
+      {
+        ...base,
+        runTools: okRunTools,
+        providerWebSearch: { maxSearches: 3 },
+        callbacks: { onWebSearch: (event) => events.push(event) },
+      },
+      stub.config,
+    );
+    expect(events).toEqual([{ kind: "unavailable" }]);
+    expect(stub.requests[0].systemPrompt).toBe(
+      "S\n\nWeb search is unavailable for this answer.",
+    );
+  });
+
   it("offers no tools when the request has none to run", async () => {
     const stub = await agent([]);
     await streamAiSdk({ ...base, tools: [] }, stub.config);

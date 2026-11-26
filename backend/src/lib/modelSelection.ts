@@ -115,6 +115,9 @@ export function hasApiKeyForModel(
     if (provider === "custom") {
         return customEndpointCredentials(apiKeys) !== null;
     }
+    // A person's own Claude subscription runs Claude models without any key
+    // (lib/llm/claudeCode.ts).
+    if (provider === "claude" && apiKeys.claudeCode) return true;
     return !!apiKeys[provider]?.trim();
 }
 
