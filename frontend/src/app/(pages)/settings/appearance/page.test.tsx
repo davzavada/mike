@@ -24,19 +24,27 @@ describe("AppearancePage", () => {
 
     it("saves dark mode without rendering a decorative card icon", async () => {
         const user = userEvent.setup();
-        const { container } = render(<AppearancePage />);
+        render(<AppearancePage />);
 
-        expect(
-            screen.getByRole("heading", { name: "Appearance" }),
-        ).toBeVisible();
+        const heading = screen.getByRole("heading", { name: "Appearance" });
+        expect(heading).toBeVisible();
         expect(screen.getByText("Dark mode")).toBeVisible();
-        expect(container.querySelector("svg")).toBeNull();
+        // The Fonts section below has menus with chevrons of their own.
+        expect(heading.closest("section")?.querySelector("svg")).toBeNull();
 
         const toggle = screen.getByRole("switch", { name: "Dark mode" });
         expect(toggle).toHaveAttribute("aria-checked", "false");
 
         await user.click(toggle);
         expect(updateDarkMode).toHaveBeenCalledWith(true);
+    });
+
+    it("offers the font choices under their own heading", () => {
+        render(<AppearancePage />);
+        expect(screen.getByRole("heading", { name: "Fonts" })).toBeVisible();
+        expect(
+            screen.getByRole("button", { name: "Reading font" }),
+        ).toBeVisible();
     });
 
     it("reports a failed change without leaking the raw error", async () => {

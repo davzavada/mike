@@ -130,6 +130,15 @@ export const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
         keywords: ["theme", "dark", "light mode", "night mode", "colour", "color", "palette", "display", "look", "contrast", "black background"],
         href: "/settings/appearance#appearance",
     },
+    {
+        id: "appearance-fonts",
+        tabId: "appearance",
+        tab: "Appearance",
+        title: "Fonts",
+        description: "Choose the fonts for answers, documents and the interface.",
+        keywords: ["font", "typeface", "typography", "serif", "sans-serif", "garamond", "inter", "text", "reading", "letters"],
+        href: "/settings/appearance#fonts",
+    },
 
     // Features
     {
