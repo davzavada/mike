@@ -12,10 +12,9 @@
 import { randomUUID } from "node:crypto";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
-import express, { Router, type Response } from "express";
+import { Router, type Response } from "express";
 
 import { sendInternalError } from "../../lib/httpError";
-import { sendServiceFailure } from "../../lib/serviceResult";
 import { setOperation } from "../../lib/observability/sentry";
 import { uploadSessionRateLimitConfiguration } from "../../lib/runtimeConfig";
 import { storageEnabled } from "../../lib/storage";
@@ -38,10 +37,6 @@ import {
   refreshUploadUrls,
 } from "./uploads.sessions";
 import type { UploadFailure } from "./uploads.shared";
-import {
-  convertEmailUpload,
-  EMAIL_CONVERSION_MAX_BYTES,
-} from "./uploads.emailConversion";
 
 export const uploadSessionsRouter = Router();
 
@@ -102,30 +97,6 @@ function sendUploadFailure(res: Response, failure: UploadFailure): void {
   }
   res.status(failure.status).json(failure.body);
 }
-
-// POST /upload-sessions/email-conversion?filename=<name>.eml
-//
-// The one upload route whose bytes do pass through Express: an email is
-// turned into a PDF and its attachments here, and the browser then uploads
-// those like any other files (uploads.emailConversion.ts). Emails are small;
-// the body is capped well below what documents may be.
-uploadSessionsRouter.post(
-  "/email-conversion",
-  requireAuth,
-  uploadSessionMutationLimiter,
-  express.raw({ type: () => true, limit: EMAIL_CONVERSION_MAX_BYTES }),
-  asyncRoute(async (req, res) => {
-    setOperation("upload_session.control");
-    const filename =
-      typeof req.query.filename === "string" ? req.query.filename : "";
-    const result = await convertEmailUpload(
-      filename,
-      Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0),
-    );
-    if (!result.ok) return sendServiceFailure(res, result);
-    res.json(result.data);
-  }),
-);
 
 // POST /upload-sessions
 uploadSessionsRouter.post(

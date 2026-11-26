@@ -7,10 +7,13 @@ export const ALLOWED_DOCUMENT_TYPES = new Set([
   "xls",
   "pptx",
   "ppt",
+  // Email files, stored as they are (lib/emailDocument.ts).
+  "eml",
+  "msg",
 ]);
 
 export const ALLOWED_DOCUMENT_TYPES_LABEL =
-  "pdf, docx, doc, xlsx, xlsm, xls, pptx, ppt";
+  "pdf, docx, doc, xlsx, xlsm, xls, pptx, ppt, eml, msg";
 
 // The lowercased extension of a filename, or "" when it has none. Three call
 // sites spelled this out with the same semantics; the other extension readers
@@ -23,6 +26,16 @@ export function documentSuffix(filename: string): string {
 const WORD_TYPES = new Set(["docx", "doc"]);
 const SPREADSHEET_TYPES = new Set(["xlsx", "xlsm", "xls"]);
 const PRESENTATION_TYPES = new Set(["pptx", "ppt"]);
+const EMAIL_TYPES = new Set(["eml", "msg"]);
+
+/**
+ * An email file (.eml, or Outlook's .msg). It is stored unchanged; its
+ * preview is a PDF of the message followed by its attachments, and its text
+ * is the message's followed by theirs (lib/emailDocument.ts).
+ */
+export function isEmailDocumentType(fileType: string | null | undefined) {
+  return EMAIL_TYPES.has((fileType ?? "").toLowerCase());
+}
 
 export function isWordDocumentType(fileType: string | null | undefined) {
   return WORD_TYPES.has((fileType ?? "").toLowerCase());
@@ -79,6 +92,10 @@ export function contentTypeForDocumentType(fileType: string | null | undefined) 
       return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
     case "ppt":
       return "application/vnd.ms-powerpoint";
+    case "eml":
+      return "message/rfc822";
+    case "msg":
+      return "application/vnd.ms-outlook";
     default:
       return "application/octet-stream";
   }

@@ -1,5 +1,5 @@
-// Email files are accepted too: they are converted to a PDF of the message
-// plus its attachments before upload (lib/emailUpload.ts).
+// Email files are stored as they are; the backend builds their preview and
+// text from the message and its attachments (backend lib/emailDocument.ts).
 export const SUPPORTED_DOCUMENT_ACCEPT =
     ".pdf,.docx,.doc,.xlsx,.xlsm,.xls,.pptx,.ppt,.eml,.msg";
 export const UNSUPPORTED_DOCUMENT_WARNING_MESSAGE =

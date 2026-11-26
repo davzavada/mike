@@ -14,7 +14,7 @@ import {
 
 import { createHash, randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { mkdir, mkdtemp, open, readdir, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Transform } from "node:stream";
@@ -37,7 +37,11 @@ import {
   type PollFailureGate,
 } from "../../lib/observability/pollFailureGate";
 import { asReportableError, withResponseStatus } from "../../lib/httpError";
-import { shouldConvertToPdf } from "../../lib/documentTypes";
+import {
+  isEmailDocumentType,
+  shouldConvertToPdf,
+} from "../../lib/documentTypes";
+import { emailToPdf } from "../../lib/emailDocument";
 import { countPagesWithoutText } from "../../lib/pdfText";
 import { uploadJobWallClockMs } from "../../lib/runtimeConfig";
 import {
@@ -300,13 +304,24 @@ async function buildPdfRendition(args: {
   sourceStoragePath: string;
 }): Promise<string | null> {
   if (args.fileType === "pdf") return args.sourceStoragePath;
-  if (!shouldConvertToPdf(args.fileType)) return null;
+  const isEmail = isEmailDocumentType(args.fileType);
+  if (!isEmail && !shouldConvertToPdf(args.fileType)) return null;
   try {
     markStage("conversion");
-    const pdfPath = await officeFileToPdf(
-      args.sourceFilePath,
-      args.workingDirectory,
-    );
+    let pdfPath: string;
+    if (isEmail) {
+      // The message followed by its attachments (lib/emailDocument.ts).
+      pdfPath = join(args.workingDirectory, "email-rendition.pdf");
+      await writeFile(
+        pdfPath,
+        await emailToPdf(await readFile(args.sourceFilePath), args.fileType),
+      );
+    } else {
+      pdfPath = await officeFileToPdf(
+        args.sourceFilePath,
+        args.workingDirectory,
+      );
+    }
     const key = convertedPdfKey(
       args.userId,
       args.documentId,

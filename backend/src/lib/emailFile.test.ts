@@ -4,7 +4,6 @@ import {
   EmailFileError,
   emailToHtml,
   htmlToPlainText,
-  isEmailFilename,
   parseEmailFile,
 } from "./emailFile";
 
@@ -124,9 +123,15 @@ describe("emailToHtml", () => {
     expect(html).toContain("Eve &lt;eve@example.com&gt;");
   });
 
+  it("marks the attachments a caller says are not shown", () => {
+    expect(emailToHtml(email, ["a.pdf", "logo.png"])).toContain(
+      "a.pdf (not shown), logo.png (not shown)",
+    );
+  });
+
   it("lists attachments, marks the ones left out, and omits empty rows", () => {
     const html = emailToHtml(email);
-    expect(html).toContain("a.pdf, logo.png (not imported)");
+    expect(html).toContain("a.pdf, logo.png (not shown)");
     expect(html).not.toContain("Cc:");
     expect(html).toContain("<p>Line one<br>Line two</p>");
   });
@@ -146,15 +151,6 @@ describe("emailToHtml", () => {
 });
 
 describe("helpers", () => {
-  it.each([
-    ["a.eml", true],
-    ["A.MSG", true],
-    ["a.eml.pdf", false],
-    ["eml", false],
-  ])("isEmailFilename(%j) is %s", (name, expected) => {
-    expect(isEmailFilename(name)).toBe(expected);
-  });
-
   it("htmlToPlainText keeps the reading order and decodes entities", () => {
     expect(
       htmlToPlainText("<div>A&nbsp;&lt;b&gt;</div><p>C<br>D</p>&#269;"),

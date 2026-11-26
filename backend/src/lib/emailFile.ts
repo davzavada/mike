@@ -1,11 +1,9 @@
 // Reading an email file (.eml, or Outlook's .msg) into the parts Mike keeps:
 // its headers, its body as plain text, and its attachments.
 //
-// Mike stores no "email" document type. An uploaded email becomes a PDF of
-// the message (see modules/uploads/uploads.emailConversion.ts) plus one
-// document per attachment of a type Mike already supports, so everything
-// downstream (preview, text extraction, citations, tabular review) treats it
-// like any other document.
+// An email is stored as the file it is. lib/emailDocument.ts builds what the
+// rest of Mike shows and reads from these parts: a PDF of the message
+// followed by its attachments, and their text.
 //
 // The body is always taken as text. An HTML body is reduced to its text
 // rather than rendered: rendering it would let the message decide what the
@@ -16,13 +14,11 @@ import path from "node:path";
 import MsgReader from "@kenjiuno/msgreader";
 
 import { AppError } from "./appError";
-import { ALLOWED_DOCUMENT_TYPES, documentSuffix } from "./documentTypes";
-
-export const EMAIL_FILE_TYPES = new Set(["eml", "msg"]);
-
-export function isEmailFilename(filename: string): boolean {
-  return EMAIL_FILE_TYPES.has(documentSuffix(filename));
-}
+import {
+  ALLOWED_DOCUMENT_TYPES,
+  documentSuffix,
+  isEmailDocumentType,
+} from "./documentTypes";
 
 /** The file is not an email this reader understands. */
 export class EmailFileError extends AppError {
@@ -94,8 +90,12 @@ function sortAttachments(
       .replace(/[\u0000-\u001f]/g, "")
       .trim();
     if (!filename) continue;
+    const type = documentSuffix(filename);
     if (
-      ALLOWED_DOCUMENT_TYPES.has(documentSuffix(filename)) &&
+      ALLOWED_DOCUMENT_TYPES.has(type) &&
+      // A message attached to a message is named, not opened: reading it
+      // would be this whole conversion again, to any depth.
+      !isEmailDocumentType(type) &&
       attachments.length < MAX_ATTACHMENTS
     ) {
       attachments.push({ filename, content: candidate.content() });
@@ -227,12 +227,19 @@ const escapeHtml = (value: string) =>
 /**
  * The message as a self-contained page for the PDF converter: a header block
  * and the body text, every value escaped, and nothing that names a resource.
+ * `notShown` names the attachments whose pages do not follow the message.
  */
-export function emailToHtml(email: ParsedEmail): string {
+export function emailToHtml(
+  email: ParsedEmail,
+  notShown: readonly string[] = email.skippedAttachments,
+): string {
+  const hidden = new Set(notShown);
   const attachments = [
     ...email.attachments.map((attachment) => attachment.filename),
-    ...email.skippedAttachments.map((name) => `${name} (not imported)`),
-  ].join(", ");
+    ...email.skippedAttachments,
+  ]
+    .map((name) => (hidden.has(name) ? `${name} (not shown)` : name))
+    .join(", ");
   const rows = [
     ["From", email.from],
     ["To", email.to],

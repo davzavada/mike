@@ -1,4 +1,4 @@
-import { File } from "lucide-react";
+import { File, Mail } from "lucide-react";
 import { SvgAssetIcon } from "@/app/components/ui/svg-asset-icon";
 import pdf from "../../../../public/icons/file-types/pdf.svg";
 import word from "../../../../public/icons/file-types/word.svg";
@@ -25,6 +25,13 @@ export function fileTypeKind(value: string | null | undefined): FileTypeKind {
     return "other";
 }
 
+/** An email file (.eml, Outlook .msg), by file_type or filename. */
+function isEmailFileType(value: string | null | undefined): boolean {
+    const raw = (value ?? "").toLowerCase().trim();
+    const ext = raw.includes(".") ? (raw.split(".").pop() ?? "") : raw;
+    return ext === "eml" || ext === "msg";
+}
+
 /**
  * Canonical document file-type icon. Size and any extra classes come from
  * `className`; `shrink-0` is always applied. `muted` renders a neutral grey
@@ -41,6 +48,8 @@ export function FileTypeIcon({
 }) {
     const cls = `${className} shrink-0`;
     const kind = fileTypeKind(fileType);
+    if (isEmailFileType(fileType))
+        return <Mail className={`${cls} ${muted ? "text-gray-300" : "text-gray-500"}`} />;
     if (kind === "other")
         return <File className={`${cls} ${muted ? "text-gray-300" : "text-gray-500"}`} />;
     return (

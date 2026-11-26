@@ -6,10 +6,12 @@ import {
     isPresentationDocumentType,
     isSpreadsheetDocumentType,
     isWordDocumentType,
+    isEmailDocumentType,
 } from "../documentTypes";
 import { extractPresentationText } from "../officeText";
 import { loadPdfjs } from "../pdfjs";
 import { spreadsheetToLLMText } from "../spreadsheet";
+import { extractDocumentText } from "./documentText";
 
 /**
  * Route a document buffer to the right text extractor for its file type:
@@ -24,6 +26,10 @@ export async function extractDocumentMarkdown(
     const normalizedType = (fileType ?? "").toLowerCase();
     if (normalizedType === "pdf") return extractPdfMarkdown(buf);
     if (normalizedType === "docx") return extractDocxMarkdown(buf);
+    if (isEmailDocumentType(normalizedType)) {
+        // Message and attachments as one text (documentText.ts).
+        return (await extractDocumentText(buf, normalizedType)).text;
+    }
     if (isSpreadsheetDocumentType(normalizedType)) {
         // SheetJS handles .xlsx/.xlsm/.xls directly, no PDF detour.
         return spreadsheetToLLMText(Buffer.from(buf));

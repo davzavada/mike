@@ -28,6 +28,7 @@ import {
 } from "../types";
 import {
   contentTypeForDocumentType,
+  isEmailDocumentType,
   isPresentationDocumentType,
   isSpreadsheetDocumentType,
   isWordDocumentType,
@@ -1409,6 +1410,12 @@ export async function readDocumentContent(
         text = await readIsolated("spreadsheet");
         devLog(
           `[read_document] spreadsheet extracted length=${text.length} for filename="${docInfo.filename}"`,
+        );
+      } else if (isEmailDocumentType(fileType)) {
+        // The message, then each attachment's text under a line naming it.
+        text = (await extract("documentText", source, { fileType })).text;
+        devLog(
+          `[read_document] email extracted length=${text.length} for filename="${docInfo.filename}"`,
         );
       } else if (fileType === "pptx") {
         text = await readIsolated("presentation");

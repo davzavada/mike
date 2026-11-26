@@ -2,8 +2,10 @@ import type { Response } from "express";
 import { docxToPdf } from "./convert";
 import {
   contentTypeForDocumentType,
+  isEmailDocumentType,
   shouldConvertToPdf,
 } from "./documentTypes";
+import { emailToPdf } from "./emailDocument";
 import { buildContentDisposition, downloadFile, downloadFileIfAvailable } from "./storage";
 
 export interface DocumentDisplaySource {
@@ -42,6 +44,14 @@ export async function prepareDocumentDisplay(source: {
   sourceBytes: ArrayBuffer | ArrayBufferView;
 }): Promise<DocumentDisplayPayload> {
   const fileType = normalizedFileType(source);
+  if (isEmailDocumentType(fileType)) {
+    // An email is previewed as its message followed by its attachments.
+    return {
+      bytes: await emailToPdf(toBuffer(source.sourceBytes), fileType),
+      contentType: "application/pdf",
+      filename: pdfFilename(source.filename),
+    };
+  }
   if (shouldConvertToPdf(fileType)) {
     return {
       bytes: await docxToPdf(toBuffer(source.sourceBytes)),
@@ -71,7 +81,8 @@ export async function loadDocumentDisplay(
   source: DocumentDisplaySource,
 ): Promise<DocumentDisplayPayload | null> {
   const fileType = normalizedFileType(source);
-  const convertToPdf = shouldConvertToPdf(fileType);
+  const convertToPdf =
+    shouldConvertToPdf(fileType) || isEmailDocumentType(fileType);
 
   if (convertToPdf) {
     if (source.pdfStoragePath) {
