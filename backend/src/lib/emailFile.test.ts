@@ -55,7 +55,7 @@ describe("parseEmailFile (.eml)", () => {
     expect(email.to).toContain("Žaneta Šťastná");
     expect(email.to).toContain("bob@example.com");
     expect(email.cc).toBe("carol@example.com");
-    expect(email.date).toBe("2026-11-20 08:15 UTC");
+    expect(email.date).toBe("Fri, 20 Nov 2026 09:15:00 +0100");
     expect(email.text).toBe(
       "Dobrý den,\n\nposílám připomínky k čl. 5.\nS pozdravem\nJan",
     );
@@ -129,6 +129,12 @@ describe("emailToHtml", () => {
     expect(html).toContain("a.pdf, logo.png (not imported)");
     expect(html).not.toContain("Cc:");
     expect(html).toContain("<p>Line one<br>Line two</p>");
+  });
+
+  it("puts the subject in the header table, where the converter keeps it", () => {
+    const html = emailToHtml({ ...email, subject: "Lease" });
+    expect(html).toMatch(/<body>\s*<table><tr><td colspan="2" class="s">Lease<\/td>/);
+    expect(emailToHtml({ ...email, subject: "" })).toContain("(no subject)");
   });
 
   it("names nothing the converter could fetch", () => {

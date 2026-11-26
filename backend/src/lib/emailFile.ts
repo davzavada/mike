@@ -137,7 +137,13 @@ async function parseEml(bytes: Buffer): Promise<ParsedEmail> {
     from: addresses(mail.from),
     to: addresses(mail.to),
     cc: addresses(mail.cc),
-    date: formatDate(mail.date),
+    // As the message states it, time zone included: the header is evidence.
+    date:
+      mail.headerLines
+        ?.find((header) => header.key === "date")
+        ?.line.replace(/^date:\s*/i, "")
+        .replace(/\s+/g, " ")
+        .trim() || formatDate(mail.date),
     text: mail.text?.trim() || (mail.html ? htmlToPlainText(mail.html) : ""),
     ...sortAttachments(
       mail.attachments
@@ -240,6 +246,12 @@ export function emailToHtml(email: ParsedEmail): string {
         `<tr><td class="l">${label}:</td><td>${escapeHtml(value)}</td></tr>`,
     )
     .join("");
+  // The subject is the table's first row, not a heading above it: LibreOffice
+  // drops a leading heading or paragraph from an HTML page and leaves an
+  // empty first page in its place.
+  const subject = `<tr><td colspan="2" class="s">${escapeHtml(
+    email.subject || "(no subject)",
+  )}</td></tr>`;
   const body = email.text
     .split(/\n{2,}/)
     .map((paragraph) => `<p>${escapeHtml(paragraph).replace(/\n/g, "<br>")}</p>`)
@@ -248,14 +260,13 @@ export function emailToHtml(email: ParsedEmail): string {
 <html><head><meta charset="utf-8">
 <style>
 body { font-family: "Liberation Sans", Arial, sans-serif; font-size: 11pt; }
-h1 { font-size: 15pt; margin: 0 0 8pt 0; }
 td { padding: 1pt 8pt 1pt 0; vertical-align: top; }
+td.s { font-size: 15pt; font-weight: bold; padding-bottom: 6pt; }
 td.l { font-weight: bold; white-space: nowrap; }
 p { margin: 0 0 8pt 0; }
 </style></head>
 <body>
-<h1>${escapeHtml(email.subject || "(no subject)")}</h1>
-<table>${rows}</table>
+<table>${subject}${rows}</table>
 <hr>
 ${body}
 </body></html>
