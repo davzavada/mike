@@ -27,6 +27,10 @@ import {
 } from "../llm/cloudProviders";
 import { WEB_SEARCH_BACKENDS } from "../webSearch";
 import {
+    claudeCodeUserDir,
+    readClaudeCodeConnection,
+} from "../claudeCode/config";
+import {
     type ConnectorOwner,
     personalConnectorOwner,
     workspaceFilter,
@@ -261,11 +265,13 @@ export async function getApiKeyStatusFor(
 ): Promise<ApiKeyStatus> {
     const status = envApiKeyStatus();
     overlayStatusRows(status, await loadStatusRows(owner, db), owner.kind);
-    if (owner.kind === "user")
+    if (owner.kind === "user") {
         overlayCourtListenerStatus(
             status,
             await readCourtListenerConnection(personalConnectorOwner(owner.id), db),
         );
+        overlayClaudeCodeStatus(status, owner.id);
+    }
     return status;
 }
 
@@ -292,6 +298,7 @@ export async function getEffectiveApiKeyStatus(
         await loadStatusRows(orgKeyOwner(orgId), db),
         "org",
     );
+    overlayClaudeCodeStatus(status, userId);
     return status;
 }
 
@@ -565,6 +572,30 @@ function overlayKeyRows(
     }
 }
 
+/**
+ * The acting user's own Claude subscription (lib/claudeCode). Laid over
+ * personal and organization work alike, and always the person's own: unlike
+ * a key, a subscription cannot be provided centrally.
+ */
+function overlayClaudeCode(apiKeys: UserApiKeys, userId: string): void {
+    if (readClaudeCodeConnection(userId))
+        apiKeys.claudeCode = { configDir: claudeCodeUserDir(userId) };
+}
+
+/**
+ * Status counterpart of overlayClaudeCode. A connected subscription makes
+ * Claude models available when no key does. It is reported like a key the
+ * deployment provides ("env"), not as a key the person saved: Settings then
+ * still offers to add an Anthropic key, which would take precedence. A
+ * provider the person switched off stays off.
+ */
+function overlayClaudeCodeStatus(status: ApiKeyStatus, userId: string): void {
+    if (status.claude || status.enabled.claude === false) return;
+    if (!readClaudeCodeConnection(userId)) return;
+    status.claude = true;
+    status.sources.claude = "env";
+}
+
 export async function getUserApiKeys(
     userId: string,
     db: Db = createServerSupabase(),
@@ -575,6 +606,7 @@ export async function getUserApiKeys(
         apiKeys,
         await readCourtListenerConnection(personalConnectorOwner(userId), db),
     );
+    overlayClaudeCode(apiKeys, userId);
     return apiKeys;
 }
 
@@ -612,6 +644,7 @@ export async function getEffectiveApiKeys(
         await readCourtListenerConnection({ userId, orgId }, db),
     );
     overlayKeyRows(apiKeys, await loadKeyRows(orgKeyOwner(orgId), db), "org");
+    overlayClaudeCode(apiKeys, userId);
     return apiKeys;
 }
 

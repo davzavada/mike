@@ -147,6 +147,13 @@ export type UserApiKeys = {
      * anywhere else carry no entry and count as the user's.
      */
     keySources?: Partial<Record<ApiKeyName, ApiKeyOrigin>>;
+    /**
+     * The acting user's own Claude subscription, when they have connected
+     * one: the Claude Code configuration directory their requests run in
+     * (lib/claudeCode). Always the person's, never an organization's or the
+     * deployment's: a subscription is not shared.
+     */
+    claudeCode?: { configDir: string } | null;
 };
 
 /** Where a key in UserApiKeys came from (see UserApiKeys.keySources). */
@@ -155,7 +162,11 @@ export type ApiKeyOrigin = "env" | "user" | "org";
 /** The UserApiKeys fields that hold a key. */
 export type ApiKeyName = Exclude<
     keyof UserApiKeys,
-    "disabledProviders" | "unusableProviders" | "providerSettings" | "keySources"
+    | "disabledProviders"
+    | "unusableProviders"
+    | "providerSettings"
+    | "keySources"
+    | "claudeCode"
 >;
 
 export type ProviderSettings = {

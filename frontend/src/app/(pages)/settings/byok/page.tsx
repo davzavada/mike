@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { ManagedByOrganization } from "@/app/components/settings/ManagedByOrganization";
+import { ClaudeSubscriptionSection } from "@/app/components/settings/ClaudeSubscriptionSection";
 import { PersonalProviderKeys } from "@/app/components/settings/PersonalProviderKeys";
 import {
     providerKeysHref,
@@ -26,7 +27,13 @@ export default function ByokPage() {
         if (organizationHref) router.replace(organizationHref);
     }, [organizationHref, router]);
 
-    if (scope.kind === "personal") return <PersonalProviderKeys />;
+    if (scope.kind === "personal")
+        return (
+            <div className="space-y-8">
+                <ClaudeSubscriptionSection />
+                <PersonalProviderKeys />
+            </div>
+        );
     if (scope.kind === "managed")
         return (
             <ManagedByOrganization

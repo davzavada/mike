@@ -40,6 +40,7 @@
     "@supabase/ssr": "^0.12.6",
     "@supabase/supabase-js": "^2.119.0",
     "ai": "^7.0.173",
+    "ai-sdk-provider-claude-code": "^4.4.1",
     "bullmq": "^6.7.6",
     "cors": "^2.8.5",
     "defuddle": "^0.19.6",
