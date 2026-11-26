@@ -62,6 +62,31 @@ heslo: smazat účet v `auth.users` a založit ho znovu, nebo nastavit SMTP.
 Každý uživatel si v Nastavení → API Keys připojí vlastní Claude předplatné,
 nebo uloží vlastní API klíč (`docs/claude-subscription.md`).
 
+## Google konektory (Drive, Gmail, Kalendář)
+
+Mike nemá vlastního Google klienta; každá instalace si ho zakládá sama
+v Google Cloud Console (`docs/google-workspace.md`). Jednorázově:
+
+1. V projektu zapnout **Google Drive API**, **Gmail API** a **Google
+   Calendar API**.
+2. Vytvořit OAuth klienta typu *Web application* s adresami pro přesměrování:
+
+   ```text
+   https://mike.davidzavada.cz/api/user/integrations/google-drive/oauth/callback
+   https://mike.davidzavada.cz/api/user/integrations/gmail/oauth/callback
+   https://mike.davidzavada.cz/api/user/integrations/google-calendar/oauth/callback
+   ```
+3. Na souhlasové obrazovce povolit scopes `openid`, `userinfo.email`,
+   `drive.file`, `gmail.readonly`, `gmail.compose`,
+   `calendar.calendarlist.readonly`, `calendar.events.readonly`,
+   `calendar.events`. V režimu Testing přidat každý Google účet mezi
+   testovací uživatele; přihlášení pak platí sedm dní.
+4. Uložit klienta na server (tajemství se při psaní nezobrazuje):
+
+   ```bash
+   ssh -t pve "pct exec 105 -- /opt/mike/deploy/proxmox/set-google-oauth.sh"
+   ```
+
 ## Tunel
 
 V CT 102, `/etc/cloudflared/config.yml`, tunel `dawmain-databaze`:
