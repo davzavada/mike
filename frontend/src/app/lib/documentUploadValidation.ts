@@ -1,7 +1,9 @@
+// Email files are accepted too: they are converted to a PDF of the message
+// plus its attachments before upload (lib/emailUpload.ts).
 export const SUPPORTED_DOCUMENT_ACCEPT =
-    ".pdf,.docx,.doc,.xlsx,.xlsm,.xls,.pptx,.ppt";
+    ".pdf,.docx,.doc,.xlsx,.xlsm,.xls,.pptx,.ppt,.eml,.msg";
 export const UNSUPPORTED_DOCUMENT_WARNING_MESSAGE =
-    "Unsupported file type. Only PDF, Word, Excel, and PowerPoint files can be uploaded.";
+    "Unsupported file type. Only PDF, Word, Excel, PowerPoint, and email (.eml, .msg) files can be uploaded.";
 
 const SUPPORTED_DOCUMENT_EXTENSIONS = new Set([
     "pdf",
@@ -12,6 +14,8 @@ const SUPPORTED_DOCUMENT_EXTENSIONS = new Set([
     "xls",
     "pptx",
     "ppt",
+    "eml",
+    "msg",
 ]);
 
 export function isSupportedDocumentFile(file: File): boolean {

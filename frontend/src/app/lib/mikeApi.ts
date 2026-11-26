@@ -1,6 +1,7 @@
 import { BACKEND_REPORTING_OWNER } from "@mike/client";
 import type { Operation } from "@mike/client";
 import { settleWithConcurrency } from "@mike/client";
+import { expandEmailFiles, type ConvertedEmail } from "./emailUpload";
 import type {
     TabularReviewHistoryStatus,
     AuditActor,
@@ -238,8 +239,15 @@ export async function uploadFilesWithSession<T>(args: {
     signal?: AbortSignal;
     onProgress?: (progress: UploadProgress<T>) => void;
 }): Promise<UploadOutcome<T>[]> {
+    // An email in the batch is first turned into a PDF of the message and
+    // its attachments (lib/emailUpload.ts); only those are uploaded.
+    const files = await expandEmailFiles(args.files, convertEmailFile, {
+        includeAttachments: args.purpose === "document_create",
+        signal: args.signal,
+    });
     return uploadFilesWithSessionCore<T>({
         ...args,
+        files,
         transport: {
             apiRequest: <R>(path: string, init?: RequestInit) => apiRequest<R>("upload_session.control", path, init),
             fetchStorage: (...fetchArgs) => fetch(...fetchArgs),
@@ -252,6 +260,23 @@ export async function uploadFilesWithSession<T>(args: {
             ),
         },
     });
+}
+
+/** Convert one .eml or .msg into the files that are uploaded in its place. */
+async function convertEmailFile(
+    file: File,
+    signal?: AbortSignal,
+): Promise<ConvertedEmail> {
+    return apiRequest<ConvertedEmail>(
+        "upload_session.control",
+        `/upload-sessions/email-conversion?filename=${encodeURIComponent(file.name)}`,
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/octet-stream" },
+            body: file,
+            signal,
+        },
+    );
 }
 
 async function apiBlobRequest(operation: Operation, path: string): Promise<{
