@@ -726,7 +726,12 @@ export async function streamAiSdk(
     const result = sdk.streamText({
       model: sdk.wrapLanguageModel({
         model,
-        middleware: [providerDeadlines(params.callbacks?.onActivity), quotaRefusalRetries()],
+        middleware: [
+          providerDeadlines(params.callbacks?.onActivity, {
+            toolsRunInProvider: !!config.agentModel,
+          }),
+          quotaRefusalRetries(),
+        ],
       }),
       // An agent model takes the system prompt as its own, above.
       system: config.agentModel ? undefined : params.systemPrompt,

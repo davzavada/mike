@@ -3,7 +3,7 @@
  * Code): the tools and system prompt go to the model, and each call it makes
  * comes back through the usual runTools path. A stub stands in for the agent.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { streamAiSdk } from "./aiSdk";
 import type { ClaudeCodeRequest } from "./claudeCode";
@@ -138,5 +138,100 @@ describe("agent model", () => {
         stub.config,
       ),
     ).rejects.toBe(pause);
+  });
+});
+
+describe("agent model deadlines", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  /** A stream that opens a tool call, waits, then returns it and answers. */
+  async function slowToolAgent(toolMs: number, withResult: boolean) {
+    const { MockLanguageModelV3 } = await import("ai/test");
+    const model = new MockLanguageModelV3({
+      doStream: async () => ({
+        stream: new ReadableStream({
+          start(controller) {
+            controller.enqueue({ type: "stream-start", warnings: [] });
+            controller.enqueue({
+              type: "tool-call",
+              toolCallId: "t1",
+              toolName: "mcp__mike__read_document",
+              input: "{}",
+              providerExecuted: true,
+              dynamic: true,
+            });
+            if (!withResult) return;
+            setTimeout(() => {
+              controller.enqueue({
+                type: "tool-result",
+                toolCallId: "t1",
+                toolName: "mcp__mike__read_document",
+                result: "text",
+              });
+              controller.enqueue({ type: "text-start", id: "a" });
+              controller.enqueue({ type: "text-delta", id: "a", delta: "done" });
+              controller.enqueue({ type: "text-end", id: "a" });
+              controller.enqueue({
+                type: "finish",
+                finishReason: { unified: "stop", raw: "stop" },
+                usage: {
+                  inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined },
+                  outputTokens: { total: 1, text: 1, reasoning: 0 },
+                },
+              });
+              controller.close();
+            }, toolMs);
+          },
+        }),
+      }),
+    });
+    return { ...config(model as never), agentModel: async () => model as never };
+  }
+
+  it("a tool inside the agent may take longer than the chunk timeout", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("STREAM_CHUNK_TIMEOUT_MS", "5000");
+    const pending = streamAiSdk(base, await slowToolAgent(30_000, true));
+    await vi.advanceTimersByTimeAsync(30_001);
+    await expect(pending).resolves.toMatchObject({ fullText: "done" });
+  });
+
+  it("a model that goes silent after its tools return still times out", async () => {
+    const { MockLanguageModelV3 } = await import("ai/test");
+    vi.useFakeTimers();
+    vi.stubEnv("STREAM_CHUNK_TIMEOUT_MS", "5000");
+    const model = new MockLanguageModelV3({
+      doStream: async () => ({
+        stream: new ReadableStream({
+          start(controller) {
+            controller.enqueue({ type: "stream-start", warnings: [] });
+            controller.enqueue({
+              type: "tool-call",
+              toolCallId: "t1",
+              toolName: "mcp__mike__read_document",
+              input: "{}",
+              providerExecuted: true,
+              dynamic: true,
+            });
+            controller.enqueue({
+              type: "tool-result",
+              toolCallId: "t1",
+              toolName: "mcp__mike__read_document",
+              result: "text",
+            });
+          },
+        }),
+      }),
+    });
+    const pending = streamAiSdk(base, {
+      ...config(model as never),
+      agentModel: async () => model as never,
+    });
+    const assertion = expect(pending).rejects.toThrow(/stopped responding/);
+    await vi.advanceTimersByTimeAsync(5001);
+    await assertion;
   });
 });

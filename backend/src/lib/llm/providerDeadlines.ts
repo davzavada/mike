@@ -4,13 +4,21 @@ import type { LanguageModelMiddleware } from "ai" with {
 import { abortable } from "../abortable";
 import { streamChunkTimeouts } from "../runtimeConfig";
 
-/** Bound one provider call, including headers, without timing the SDK's tools. */
+/**
+ * Bound one provider call, including headers, without timing the SDK's tools.
+ *
+ * `toolsRunInProvider` is for a model that runs tools inside its own stream
+ * (Claude Code): the wait between a tool call and its result is the tool's
+ * time, not the model's, so the chunk clock stops while a call is open.
+ */
 export function providerDeadlines(
   onActivity?: () => void,
+  options: { toolsRunInProvider?: boolean } = {},
 ): LanguageModelMiddleware {
   return {
     wrapStream: async ({ model, params }) => {
       const limits = streamChunkTimeouts();
+      const openToolCalls = new Set<string>();
       const controller = new AbortController();
       const forwardAbort = () => controller.abort(params.abortSignal?.reason);
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -66,11 +74,29 @@ export function providerDeadlines(
                 }
                 const part = next.value;
                 switch (part.type) {
+                  case "tool-call":
+                    if (options.toolsRunInProvider) {
+                      openToolCalls.add(part.toolCallId);
+                      clearTimeout(timer);
+                      onActivity?.();
+                      break;
+                    }
+                    arm("Chunk", limits.chunkMs);
+                    onActivity?.();
+                    break;
+                  case "tool-result":
+                    if (openToolCalls.delete(part.toolCallId)) {
+                      // The model speaks next once every open call is back.
+                      if (openToolCalls.size === 0)
+                        arm("Chunk", limits.chunkMs);
+                      onActivity?.();
+                    }
+                    break;
                   case "text-delta":
                   case "reasoning-delta":
                   case "tool-input-delta":
-                  case "tool-call":
                   case "file":
+                    openToolCalls.clear();
                     arm("Chunk", limits.chunkMs);
                     onActivity?.();
                     break;
