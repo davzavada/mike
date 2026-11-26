@@ -22,6 +22,8 @@
   connectors: setup, permissions, approvals, limits, and acceptance tests
 - [CourtListener integration](courtlistener.md) — live US case-law tools and
   optional bulk data
+- [Claude subscriptions](claude-subscription.md) — running Claude models on
+  each person's own Claude plan through Claude Code, and its limits
 - [Web search](web-search.md) — provider search and search services, page
   reading, keys, and safety
 - [Subagents](subagents.md) — delegated tasks, what they may do, approvals,
