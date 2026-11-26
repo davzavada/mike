@@ -1,0 +1,71 @@
+# Self-hosted deployment on a private host behind a tunnel or reverse proxy.
+# Layered over the repository's docker-compose.yml through COMPOSE_FILE in the
+# compose-root .env (see deploy/proxmox/README.md), so the upstream file stays
+# untouched and merges cleanly.
+#
+# What it changes:
+#   - Supabase runs with its own JWT secret instead of the published demo one
+#     (the backend refuses the demo keys under NODE_ENV=production).
+#   - Object storage gets its own access key pair: the storage port is the one
+#     browsers upload to, so the default pair would expose every file.
+#   - Only the web app and the storage API listen on the host's internal
+#     address; everything else stays on loopback.
+#   - The backend gets a persistent directory for per-user Claude Code logins.
+#
+# Needs Compose 2.24+ for `!override`.
+
+services:
+  db:
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+
+  auth:
+    environment:
+      GOTRUE_JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+
+  rest:
+    environment:
+      PGRST_JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+
+  gateway:
+    ports: !override
+      - "127.0.0.1:${GATEWAY_PORT:-54321}:8000"
+
+  storage:
+    ports: !override
+      - "${MIKE_BIND_IP:?set MIKE_BIND_IP in .env}:${STORAGE_PORT:-9000}:9000"
+    environment:
+      RUSTFS_ACCESS_KEY: ${STORAGE_ACCESS_KEY:?set STORAGE_ACCESS_KEY in .env}
+      RUSTFS_SECRET_KEY: ${STORAGE_SECRET_KEY:?set STORAGE_SECRET_KEY in .env}
+      RUSTFS_CONSOLE_ENABLE: "false"
+
+  createbucket:
+    environment:
+      AWS_ACCESS_KEY_ID: ${STORAGE_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${STORAGE_SECRET_KEY}
+
+  workflow-sync:
+    environment:
+      R2_ACCESS_KEY_ID: ${STORAGE_ACCESS_KEY}
+      R2_SECRET_ACCESS_KEY: ${STORAGE_SECRET_KEY}
+
+  backend:
+    ports: !override
+      - "127.0.0.1:${BACKEND_PORT:-3001}:3001"
+    environment:
+      R2_ACCESS_KEY_ID: ${STORAGE_ACCESS_KEY}
+      R2_SECRET_ACCESS_KEY: ${STORAGE_SECRET_KEY}
+      # Per-user Claude subscription logins (docs/claude-subscription.md).
+      CLAUDE_CODE_SUBSCRIPTION: ${CLAUDE_CODE_SUBSCRIPTION:-on}
+      CLAUDE_CODE_DATA_DIR: /data/claude
+      CLAUDE_CODE_MAX_CONCURRENCY: ${CLAUDE_CODE_MAX_CONCURRENCY:-3}
+      DISABLE_TELEMETRY: "1"
+    volumes:
+      - claude_data:/data/claude
+
+  frontend:
+    ports: !override
+      - "${MIKE_BIND_IP}:${FRONTEND_PORT:-3000}:3000"
+
+volumes:
+  claude_data:
