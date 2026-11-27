@@ -4,6 +4,7 @@ import { useCallback, useEffect, useId, useState } from "react";
 import Image from "next/image";
 
 import { PillButtonUI } from "@mike/ui";
+import { ClaudeSubscriptionUsage } from "@/app/components/settings/ClaudeSubscriptionUsage";
 import { ConnectorCard } from "@/app/components/settings/ConnectorCard";
 import { SettingsHeading } from "@/app/components/settings/SettingsHeading";
 import { SettingsDescription } from "@/app/components/settings/SettingsText";
@@ -145,6 +146,7 @@ export function ClaudeSubscriptionSection() {
                     }
                 />
             </div>
+            {status.connected ? <ClaudeSubscriptionUsage /> : null}
             {signingIn ? (
                 <form
                     className="max-w-xl space-y-3"
