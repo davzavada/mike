@@ -1304,6 +1304,77 @@ export async function setApiKeyEnabled(
     });
 }
 
+/** A person's own Claude subscription, run through Claude Code on the server. */
+export interface ClaudeSubscriptionStatus {
+    /** False when the deployment has not enabled Claude subscriptions. */
+    available: boolean;
+    connected: boolean;
+    account: string | null;
+    plan: string | null;
+    /** The sign-in link of a login that is waiting for its code. */
+    loginUrl: string | null;
+}
+
+export async function getClaudeSubscription(): Promise<ClaudeSubscriptionStatus> {
+    return apiRequest<ClaudeSubscriptionStatus>(
+        "settings.keys",
+        "/user/claude-subscription",
+    );
+}
+
+/** One of the plan's limits, as Anthropic reports it through Claude Code. */
+export interface ClaudeSubscriptionUsageWindow {
+    /** The rolling five-hour window, the week, or one model's week. */
+    kind: "session" | "week" | "week_model";
+    model: string | null;
+    /** 0–100. */
+    usedPercent: number;
+    resetsAt: string | null;
+}
+
+export interface ClaudeSubscriptionUsage {
+    checkedAt: string;
+    /** Empty when Anthropic reports no plan limits for the account. */
+    windows: ClaudeSubscriptionUsageWindow[];
+}
+
+export async function getClaudeSubscriptionUsage(): Promise<ClaudeSubscriptionUsage> {
+    return apiRequest<ClaudeSubscriptionUsage>(
+        "settings.keys",
+        "/user/claude-subscription/usage",
+    );
+}
+
+export async function startClaudeSubscriptionLogin(): Promise<ClaudeSubscriptionStatus> {
+    return apiRequest<ClaudeSubscriptionStatus>(
+        "settings.keys",
+        "/user/claude-subscription/login",
+        { method: "POST" },
+    );
+}
+
+export async function completeClaudeSubscriptionLogin(
+    code: string,
+): Promise<ClaudeSubscriptionStatus> {
+    return apiRequest<ClaudeSubscriptionStatus>(
+        "settings.keys",
+        "/user/claude-subscription/login/complete",
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ code }),
+        },
+    );
+}
+
+export async function disconnectClaudeSubscription(): Promise<ClaudeSubscriptionStatus> {
+    return apiRequest<ClaudeSubscriptionStatus>(
+        "settings.keys",
+        "/user/claude-subscription",
+        { method: "DELETE" },
+    );
+}
+
 interface McpToolSummary {
     id: string;
     toolName: string;

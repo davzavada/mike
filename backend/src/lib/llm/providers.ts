@@ -17,6 +17,7 @@ import {
 import { guardedFetch } from "../mcp/client";
 import { isBlockedDestinationError } from "../blockedDestination";
 import { localModelToleranceMiddleware } from "./localModelMiddleware";
+import { createClaudeCodeModel } from "./claudeCode";
 import { ProviderConfigurationError, providerFailureResponse, type ProviderKeySource } from "./providerErrors";
 import {
   ACCOUNT_MODEL_LABELS,
@@ -249,6 +250,28 @@ async function createAnthropicAdapter(args: {
             anthropic.tools.webSearch_20250305({ maxUses }),
         }
       : {}),
+  };
+}
+
+/**
+ * Claude on the person's own subscription (claudeCode.ts). Claude Code runs
+ * the tool loop itself, so chat requests get a model built for them through
+ * `agentModel`; `model` answers one-shot completions such as titles.
+ */
+async function createClaudeCodeAdapter(
+  model: string,
+  configDir: string,
+): Promise<AiSdkAdapterConfig> {
+  const target = { modelId: model, configDir };
+  return {
+    provider: "claude",
+    label: "Claude",
+    model: await createClaudeCodeModel(target),
+    modelId: model,
+    // The subscription is the person's own, like a key they saved.
+    keySource: "user",
+    supportsReasoning: true,
+    agentModel: (request) => createClaudeCodeModel(target, request),
   };
 }
 
@@ -692,6 +715,14 @@ async function buildProviderAdapter(
   }
 
   if (provider === "claude") {
+    // A key saved by the person or their organization runs as it always
+    // has. Without one, the person's own Claude subscription answers, when
+    // they have connected it; the deployment's key is the last resort.
+    const savedKey =
+      !!apiKeys?.claude?.trim() && keySourceFor(apiKeys, "claude") !== "deployment";
+    if (apiKeys?.claudeCode && !savedKey) {
+      return createClaudeCodeAdapter(model, apiKeys.claudeCode.configDir);
+    }
     return createAnthropicAdapter({
       provider,
       label: "Claude",

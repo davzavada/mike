@@ -34,6 +34,14 @@ import { sendServiceFailure } from "../../lib/serviceResult";
 import { dbJobsEnabled } from "../../lib/dbq/runner";
 import { buildContentDisposition } from "../../lib/storage";
 import { normalizeApiKeyProvider } from "../../lib/providerCredentials/index";
+import {
+    completeClaudeSubscriptionLogin,
+    disconnectClaudeSubscription,
+    getClaudeSubscriptionStatus,
+    startClaudeSubscriptionLogin,
+    type ClaudeSubscriptionResult,
+} from "../../lib/claudeCode/auth";
+import { getClaudeSubscriptionUsage } from "../../lib/claudeCode/usage";
 import { completeUserMcpConnectorOAuth } from "../../lib/mcpConnectors";
 import { conciseMcpErrorMessage } from "../../lib/mcp/errors";
 import {
@@ -579,6 +587,106 @@ userRouter.patch(
         );
         if (!result.ok) return sendServiceFailure(res, result);
         res.json(result.data);
+    }),
+);
+
+// A person's own Claude subscription (docs/claude-subscription.md). Sign-in
+// is Claude Code's: these routes start it, pass the confirmation code on,
+// and sign it out again.
+function sendClaudeSubscriptionResult(
+    res: Response,
+    result: ClaudeSubscriptionResult,
+): void {
+    if (result.ok) return void res.json(result.status);
+    const status = {
+        unavailable: 404,
+        validation: 400,
+        conflict: 409,
+        error: 502,
+    }[result.kind];
+    res.status(status).json({ detail: result.detail });
+}
+
+// GET /user/claude-subscription
+userRouter.get(
+    "/claude-subscription",
+    requireAuth,
+    asyncRoute(async (_req, res) => {
+        setOperation("settings.keys");
+        res.json(
+            await getClaudeSubscriptionStatus(res.locals.userId as string, {
+                refresh: true,
+            }),
+        );
+    }),
+);
+
+// GET /user/claude-subscription/usage
+userRouter.get(
+    "/claude-subscription/usage",
+    requireAuth,
+    asyncRoute(async (_req, res) => {
+        setOperation("settings.keys");
+        const result = await getClaudeSubscriptionUsage(
+            res.locals.userId as string,
+        );
+        if (result.ok) return void res.json(result.usage);
+        if (result.kind === "error") {
+            return void res.status(502).json({
+                detail: "Claude Code could not report your plan usage.",
+            });
+        }
+        res.status(404).json({
+            detail:
+                result.kind === "unavailable"
+                    ? "Claude subscriptions are not enabled on this deployment."
+                    : "No Claude subscription is connected.",
+        });
+    }),
+);
+
+// POST /user/claude-subscription/login
+userRouter.post(
+    "/claude-subscription/login",
+    requireAuth,
+    requireMfaIfEnrolled,
+    asyncRoute(async (_req, res) => {
+        setOperation("settings.keys");
+        sendClaudeSubscriptionResult(
+            res,
+            await startClaudeSubscriptionLogin(res.locals.userId as string),
+        );
+    }),
+);
+
+// POST /user/claude-subscription/login/complete
+userRouter.post(
+    "/claude-subscription/login/complete",
+    requireAuth,
+    requireMfaIfEnrolled,
+    asyncRoute(async (req, res) => {
+        setOperation("settings.keys");
+        sendClaudeSubscriptionResult(
+            res,
+            await completeClaudeSubscriptionLogin(
+                res.locals.userId as string,
+                req.body?.code,
+            ),
+        );
+    }),
+);
+
+// DELETE /user/claude-subscription
+userRouter.delete(
+    "/claude-subscription",
+    requireAuth,
+    requireMfaIfEnrolled,
+    asyncRoute(async (_req, res) => {
+        setOperation("settings.keys");
+        sendClaudeSubscriptionResult(
+            res,
+            await disconnectClaudeSubscription(res.locals.userId as string),
+        );
     }),
 );
 

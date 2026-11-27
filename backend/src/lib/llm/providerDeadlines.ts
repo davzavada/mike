@@ -4,13 +4,23 @@ import type { LanguageModelMiddleware } from "ai" with {
 import { abortable } from "../abortable";
 import { streamChunkTimeouts } from "../runtimeConfig";
 
-/** Bound one provider call, including headers, without timing the SDK's tools. */
+/**
+ * Bound one provider call, including headers, without timing the SDK's tools.
+ *
+ * `toolsRunInProvider` is for a model that runs tools inside its own stream
+ * (Claude Code): the wait between a tool call and its result is the tool's
+ * time, not the model's, so the chunk clock stops while a call is open. The
+ * results start the model's next request inside the same stream, which gets
+ * the first-chunk allowance a new request to any other provider gets.
+ */
 export function providerDeadlines(
   onActivity?: () => void,
+  options: { toolsRunInProvider?: boolean } = {},
 ): LanguageModelMiddleware {
   return {
     wrapStream: async ({ model, params }) => {
       const limits = streamChunkTimeouts();
+      const openToolCalls = new Set<string>();
       const controller = new AbortController();
       const forwardAbort = () => controller.abort(params.abortSignal?.reason);
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -69,11 +79,34 @@ export function providerDeadlines(
                 }
                 const part = next.value;
                 switch (part.type) {
+                  case "tool-call":
+                    if (options.toolsRunInProvider) {
+                      openToolCalls.add(part.toolCallId);
+                      clearTimeout(timer);
+                      onActivity?.();
+                      break;
+                    }
+                    phase = ["Chunk", limits.chunkMs];
+                    arm(...phase);
+                    onActivity?.();
+                    break;
+                  case "tool-result":
+                    if (openToolCalls.delete(part.toolCallId)) {
+                      // Once every open call is back the model is asked
+                      // again: a new request, with its own time to first
+                      // output.
+                      if (openToolCalls.size === 0) {
+                        phase = ["First chunk", limits.firstChunkMs];
+                        arm(...phase);
+                      }
+                      onActivity?.();
+                    }
+                    break;
                   case "text-delta":
                   case "reasoning-delta":
                   case "tool-input-delta":
-                  case "tool-call":
                   case "file":
+                    openToolCalls.clear();
                     phase = ["Chunk", limits.chunkMs];
                     arm(...phase);
                     onActivity?.();
@@ -84,10 +117,12 @@ export function providerDeadlines(
                   // Both prove the provider is alive, so they renew this
                   // deadline. They are not output, so they leave onActivity
                   // (the run's idle deadline) to bound a model that never
-                  // answers.
+                  // answers. While a tool runs inside the provider no
+                  // deadline is armed, and a liveness signal does not start
+                  // one.
                   case "reasoning-start":
                   case "ping":
-                    arm(...phase);
+                    if (openToolCalls.size === 0) arm(...phase);
                     break;
                   case "finish":
                   case "error":

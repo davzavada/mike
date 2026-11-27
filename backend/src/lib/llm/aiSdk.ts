@@ -29,6 +29,8 @@ import {
   type ProviderKeySource,
 } from "./providerErrors";
 import { createRawLlmStreamRecorder, logRawLlmStream } from "./rawStreamLog";
+import type { ClaudeCodeRequest, ClaudeCodeTools } from "./claudeCode";
+import { randomUUID } from "node:crypto";
 
 installProviderWarningLogger();
 
@@ -284,6 +286,15 @@ export type AiSdkAdapterConfig = {
    * one-shot alike: the data-retention settings chosen in providers.ts.
    */
   requestProviderOptions?: StreamTextProviderOptions;
+  /**
+   * Set by an adapter whose model runs the tool loop itself (Claude Code,
+   * claudeCode.ts): builds the model for one chat request, carrying that
+   * request's system prompt and tools. `model` then serves one-shot
+   * completions only.
+   */
+  agentModel?: (
+    request: ClaudeCodeRequest,
+  ) => Promise<Exclude<LanguageModel, string>>;
 };
 
 /** Per-namespace merge: a later set's fields win within a namespace. */
@@ -413,6 +424,45 @@ function toAiSdkTools(
       return [schema.function.name, sdk.tool(definition as never)];
     }),
   );
+}
+
+/**
+ * The same tools for a model that runs the tool loop itself. There is no
+ * `tool-call` stream part to announce a call from, so the call is announced
+ * here, as it starts; arguments are checked here too, and a mismatch is
+ * answered to the model as an error it can correct, as the AI SDK does.
+ */
+function toAgentTools(
+  schemas: OpenAIToolSchema[],
+  runTools: StreamChatParams["runTools"],
+  onRunToolsFailure: (error: unknown) => void,
+  inputChecker: ToolInputChecker | undefined,
+  onToolCallStart: ((call: NormalizedToolCall) => void) | undefined,
+): ClaudeCodeTools | undefined {
+  if (!schemas.length || !runTools) return undefined;
+  const batcher = new ToolExecutionBatcher(runTools, onRunToolsFailure);
+  const checks = new Map(
+    schemas.map((schema) => [
+      schema.function.name,
+      inputChecker?.(schema.function.name, schema.function.parameters),
+    ]),
+  );
+  return {
+    schemas,
+    run: async ({ name, input }) => {
+      const checked = checks.get(name)?.(input);
+      if (checked && !checked.success) {
+        return { text: checked.error.message, isError: true };
+      }
+      const call: NormalizedToolCall = {
+        id: `call_${randomUUID()}`,
+        name,
+        input: normalizeToolInput(checked ? checked.value : input),
+      };
+      onToolCallStart?.(call);
+      return { text: await batcher.execute(call) };
+    },
+  };
 }
 
 /**
@@ -583,16 +633,20 @@ export async function streamAiSdk(
   const inputChecker = params.tools?.length
     ? await loadToolInputChecker()
     : undefined;
-  const functionTools = toAiSdkTools(
-    params.tools ?? [],
-    params.runTools,
-    sdk,
-    (error) => {
-      runToolsFailure.first ??= { error };
-      internalAbort.abort();
-    },
-    inputChecker,
-  );
+  const onRunToolsFailure = (error: unknown) => {
+    runToolsFailure.first ??= { error };
+    internalAbort.abort();
+  };
+  // An agent model is handed the tools itself (below); the SDK gets none.
+  const functionTools = config.agentModel
+    ? undefined
+    : toAiSdkTools(
+        params.tools ?? [],
+        params.runTools,
+        sdk,
+        onRunToolsFailure,
+        inputChecker,
+      );
   const webSearch =
     params.providerWebSearch && config.webSearchTool
       ? {
@@ -650,12 +704,37 @@ export async function streamAiSdk(
   let lastRawFinishReason: string | undefined;
 
   try {
+    // The provider's own web search does not exist on an agent model. Say so
+    // to the interface and to the model, whose prompt otherwise promises it.
+    const searchUnavailable = !!config.agentModel && !!params.providerWebSearch;
+    if (searchUnavailable) emitWebSearch({ kind: "unavailable" });
+    const model = config.agentModel
+      ? await config.agentModel({
+          systemPrompt: searchUnavailable
+            ? `${params.systemPrompt}\n\nWeb search is unavailable for this answer.`
+            : params.systemPrompt,
+          maxTurns: maxIterations,
+          tools: toAgentTools(
+            params.tools ?? [],
+            params.runTools,
+            onRunToolsFailure,
+            inputChecker,
+            params.callbacks?.onToolCallStart,
+          ),
+        })
+      : config.model;
     const result = sdk.streamText({
       model: sdk.wrapLanguageModel({
-        model: config.model,
-        middleware: [providerDeadlines(params.callbacks?.onActivity), quotaRefusalRetries()],
+        model,
+        middleware: [
+          providerDeadlines(params.callbacks?.onActivity, {
+            toolsRunInProvider: !!config.agentModel,
+          }),
+          quotaRefusalRetries(),
+        ],
       }),
-      system: params.systemPrompt,
+      // An agent model takes the system prompt as its own, above.
+      system: config.agentModel ? undefined : params.systemPrompt,
       messages: cacheHints.messages,
       ...(Object.keys(providerOptions).length
         ? { providerOptions }
