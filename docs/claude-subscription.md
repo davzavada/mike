@@ -46,6 +46,19 @@ with `@anthropic-ai/claude-agent-sdk`, once per request:
   longer than `STREAM_CHUNK_TIMEOUT_MS` without sending anything is ended as
   one that stopped responding.
 
+## Plan usage
+
+Once a subscription is connected, the Claude Subscription section shows how
+much of the plan is used: the five-hour session, the week, and each model's
+week, with the time each resets. The figures are Anthropic's. Mike starts
+Claude Code in the person's directory and sends its usage request
+(`backend/src/lib/claudeCode/usage.ts`); no prompt goes to a model, so
+reading them uses none of the plan. An answer is kept for a minute.
+
+The request is an Agent SDK method marked experimental. If a later SDK
+renames it, the section reports that the usage could not be loaded and
+everything else keeps working.
+
 ## Deadlines and waiting
 
 A chat turn has the same silence limits as with any other provider

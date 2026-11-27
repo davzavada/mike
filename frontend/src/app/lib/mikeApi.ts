@@ -1322,6 +1322,29 @@ export async function getClaudeSubscription(): Promise<ClaudeSubscriptionStatus>
     );
 }
 
+/** One of the plan's limits, as Anthropic reports it through Claude Code. */
+export interface ClaudeSubscriptionUsageWindow {
+    /** The rolling five-hour window, the week, or one model's week. */
+    kind: "session" | "week" | "week_model";
+    model: string | null;
+    /** 0–100. */
+    usedPercent: number;
+    resetsAt: string | null;
+}
+
+export interface ClaudeSubscriptionUsage {
+    checkedAt: string;
+    /** Empty when Anthropic reports no plan limits for the account. */
+    windows: ClaudeSubscriptionUsageWindow[];
+}
+
+export async function getClaudeSubscriptionUsage(): Promise<ClaudeSubscriptionUsage> {
+    return apiRequest<ClaudeSubscriptionUsage>(
+        "settings.keys",
+        "/user/claude-subscription/usage",
+    );
+}
+
 export async function startClaudeSubscriptionLogin(): Promise<ClaudeSubscriptionStatus> {
     return apiRequest<ClaudeSubscriptionStatus>(
         "settings.keys",
