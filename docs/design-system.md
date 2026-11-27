@@ -201,6 +201,17 @@ keeps that title on the line of the sidebar's logo text. The settings areas
 (`SettingsShell`) are titled by the same breadcrumbs ("Settings › Memory"),
 and each opens on an overview of its sections as cards (`SettingsOverview`).
 
+The interface can be shown in Czech (Settings → Appearance → Language), where
+the product is called Michal. Components keep plain English strings: the
+dictionary `frontend/src/app/lib/i18n/cs.json` is applied to the rendered page
+(`lib/i18n/domTranslator.ts`), and a string without an entry stays English.
+After adding or changing interface text, run
+`node frontend/scripts/ui-strings.mjs --missing` and add the Czech for what it
+lists. Text a person or a model wrote is never translated: anything inside
+`.prose`, `.whitespace-pre-wrap`, editors, `textarea`, `pre`, `code` or an
+element marked `data-no-translate`. Mark a component that shows such text in
+another way with `data-no-translate`.
+
 On iPhone and iPad, text fields render at 16px or more whatever utility they
 carry: iOS zooms the page into a focused field with smaller text. The rule is
 at the end of `globals.css` and applies only there, so size a field for the

@@ -12,12 +12,21 @@ import {
     applyFontPreference,
     getFontPreference,
 } from "@/app/lib/fontPreference";
+import {
+    applyInterfaceLanguage,
+    getInterfaceLanguage,
+} from "@/app/lib/i18n/interfaceLanguage";
 
 export function Providers({ children }: { children: React.ReactNode }) {
     useInputModality();
     // This browser's font choice (Settings → Appearance), before first paint.
     useLayoutEffect(() => {
         applyFontPreference(getFontPreference());
+    }, []);
+    // This browser's interface language (Settings → Appearance). It runs
+    // once the page has hydrated: the server renders English.
+    useLayoutEffect(() => {
+        void applyInterfaceLanguage(getInterfaceLanguage());
     }, []);
     return (
         <AuthProvider>
