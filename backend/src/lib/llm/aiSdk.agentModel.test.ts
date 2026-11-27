@@ -267,4 +267,77 @@ describe("agent model deadlines", () => {
     await vi.advanceTimersByTimeAsync(20_001);
     await assertion;
   });
+
+  /**
+   * An agent that writes a little, runs a 30 s tool with a ping one second
+   * in, then thinks silently for 32 s after the result, pinging every 8 s,
+   * before it answers.
+   */
+  async function pingingAgent() {
+    const { MockLanguageModelV3 } = await import("ai/test");
+    const model = new MockLanguageModelV3({
+      doStream: async () => ({
+        stream: new ReadableStream({
+          start(controller) {
+            controller.enqueue({ type: "stream-start", warnings: [] });
+            controller.enqueue({ type: "text-start", id: "p" });
+            controller.enqueue({ type: "text-delta", id: "p", delta: "Reading. " });
+            controller.enqueue({ type: "text-end", id: "p" });
+            controller.enqueue({
+              type: "tool-call",
+              toolCallId: "t1",
+              toolName: "mcp__mike__read_document",
+              input: "{}",
+              providerExecuted: true,
+              dynamic: true,
+            });
+            setTimeout(() => controller.enqueue({ type: "ping" }), 1_000);
+            setTimeout(() => {
+              controller.enqueue({
+                type: "tool-result",
+                toolCallId: "t1",
+                toolName: "mcp__mike__read_document",
+                result: "text",
+              });
+              controller.enqueue({ type: "reasoning-start", id: "r" });
+              for (let i = 1; i <= 4; i++) {
+                setTimeout(() => controller.enqueue({ type: "ping" }), i * 8_000);
+              }
+              setTimeout(() => {
+                controller.enqueue({ type: "text-start", id: "a" });
+                controller.enqueue({ type: "text-delta", id: "a", delta: "done" });
+                controller.enqueue({ type: "text-end", id: "a" });
+                controller.enqueue({
+                  type: "finish",
+                  finishReason: { unified: "stop", raw: "stop" },
+                  usage: {
+                    inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined },
+                    outputTokens: { total: 1, text: 1, reasoning: 0 },
+                  },
+                });
+                controller.close();
+              }, 32_000 + 1_000);
+            }, 30_000);
+          },
+        }),
+      }),
+    });
+    return { ...config(model as never), agentModel: async () => model as never };
+  }
+
+  it("a ping during a tool starts no deadline, and after it renews the first-chunk one", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("STREAM_CHUNK_TIMEOUT_MS", "5000");
+    vi.stubEnv("STREAM_FIRST_CHUNK_TIMEOUT_MS", "10000");
+    let outcome: unknown;
+    const pending = streamAiSdk(base, await pingingAgent()).then(
+      (result) => (outcome = result),
+      (error) => (outcome = error),
+    );
+    for (let second = 0; second < 90 && outcome === undefined; second += 1) {
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+    await pending;
+    expect(outcome).toMatchObject({ fullText: "Reading. done" });
+  });
 });

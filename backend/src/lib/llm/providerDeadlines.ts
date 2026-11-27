@@ -24,6 +24,9 @@ export function providerDeadlines(
       const controller = new AbortController();
       const forwardAbort = () => controller.abort(params.abortSignal?.reason);
       let timer: ReturnType<typeof setTimeout> | undefined;
+      // The deadline a liveness signal renews: the first-output one until
+      // the model produces output, then the gap between output chunks.
+      let phase: [label: string, ms: number] = ["First chunk", limits.firstChunkMs];
       const cleanup = () => {
         clearTimeout(timer);
         params.abortSignal?.removeEventListener("abort", forwardAbort);
@@ -47,7 +50,7 @@ export function providerDeadlines(
         params.abortSignal?.addEventListener("abort", forwardAbort, {
           once: true,
         });
-      arm("First chunk", limits.firstChunkMs);
+      arm(...phase);
       try {
         controller.signal.throwIfAborted();
         const pending = Promise.resolve(
@@ -83,7 +86,8 @@ export function providerDeadlines(
                       onActivity?.();
                       break;
                     }
-                    arm("Chunk", limits.chunkMs);
+                    phase = ["Chunk", limits.chunkMs];
+                    arm(...phase);
                     onActivity?.();
                     break;
                   case "tool-result":
@@ -91,8 +95,10 @@ export function providerDeadlines(
                       // Once every open call is back the model is asked
                       // again: a new request, with its own time to first
                       // output.
-                      if (openToolCalls.size === 0)
-                        arm("First chunk", limits.firstChunkMs);
+                      if (openToolCalls.size === 0) {
+                        phase = ["First chunk", limits.firstChunkMs];
+                        arm(...phase);
+                      }
                       onActivity?.();
                     }
                     break;
@@ -101,8 +107,22 @@ export function providerDeadlines(
                   case "tool-input-delta":
                   case "file":
                     openToolCalls.clear();
-                    arm("Chunk", limits.chunkMs);
+                    phase = ["Chunk", limits.chunkMs];
+                    arm(...phase);
                     onActivity?.();
+                    break;
+                  // Claude 5 and Opus 4.7+ hide their thinking by default:
+                  // the stream holds a thinking block start, then only pings
+                  // until the signature, for as long as the model thinks.
+                  // Both prove the provider is alive, so they renew this
+                  // deadline. They are not output, so they leave onActivity
+                  // (the run's idle deadline) to bound a model that never
+                  // answers. While a tool runs inside the provider no
+                  // deadline is armed, and a liveness signal does not start
+                  // one.
+                  case "reasoning-start":
+                  case "ping":
+                    if (openToolCalls.size === 0) arm(...phase);
                     break;
                   case "finish":
                   case "error":

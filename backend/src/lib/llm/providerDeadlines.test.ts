@@ -137,3 +137,44 @@ it("keeps healthy slow provider output alive and clears timers on completion", a
   expect(cancel).toHaveBeenCalledOnce();
   expect(vi.getTimerCount()).toBe(0);
 });
+
+it("pings renew the current deadline without counting as output", async () => {
+  const { MockLanguageModelV3 } = await import("ai/test");
+  vi.useFakeTimers();
+  vi.stubEnv("STREAM_FIRST_CHUNK_TIMEOUT_MS", "10000");
+  vi.stubEnv("STREAM_CHUNK_TIMEOUT_MS", "5000");
+  let controller!: ReadableStreamDefaultController;
+  const activity = vi.fn();
+  const model = new MockLanguageModelV3({
+    doStream: async () => ({
+      stream: new ReadableStream({
+        start(c) {
+          controller = c;
+        },
+      }),
+    }),
+  });
+  const pending = streamAiSdk(
+    {
+      model: "m",
+      systemPrompt: "S",
+      messages: [{ role: "user", content: "go" }],
+      callbacks: { onActivity: activity },
+    },
+    config(model),
+  );
+  const assertion = expect(pending).rejects.toThrow(/stopped responding/);
+  await vi.advanceTimersByTimeAsync(1);
+  controller.enqueue({ type: "reasoning-start", id: "r" });
+  // Before any output a ping renews the first-output deadline, not the
+  // shorter gap between chunks.
+  for (let i = 0; i < 4; i++) {
+    await vi.advanceTimersByTimeAsync(9000);
+    controller.enqueue({ type: "ping" });
+  }
+  // A provider that stops pinging is still ended.
+  await vi.advanceTimersByTimeAsync(10001);
+  await assertion;
+  expect(activity).not.toHaveBeenCalled();
+  expect(vi.getTimerCount()).toBe(0);
+});
