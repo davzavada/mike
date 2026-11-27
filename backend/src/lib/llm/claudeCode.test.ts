@@ -1,0 +1,215 @@
+/**
+ * The model Mike builds around Claude Code (claudeCode.ts): what it asks the
+ * provider for, and how a call that fails or hangs gives its slot back. The
+ * provider package is replaced by scripted models; no Claude Code process.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { finish, step, text, textStep } from "./__tests__/mockLanguageModel";
+
+type Call = { instance: number; params: Record<string, unknown> };
+type GenerateScript = (call: Call) => Promise<unknown>;
+
+const provider = vi.hoisted(() => ({
+  instances: 0,
+  generateCalls: [] as Call[],
+  streamCalls: [] as Call[],
+  generate: null as GenerateScript | null,
+  stream: null as ((call: Call) => Promise<unknown>) | null,
+}));
+
+vi.mock("ai-sdk-provider-claude-code", () => ({
+  isAuthenticationError: () => false,
+  isAccountStateError: () => false,
+  createClaudeCode: () => () => {
+    const instance = (provider.instances += 1);
+    return {
+      specificationVersion: "v3",
+      provider: "claude-code",
+      modelId: "claude-opus-5-5",
+      supportedUrls: {},
+      doGenerate: (params: Record<string, unknown>) => {
+        const call = { instance, params };
+        provider.generateCalls.push(call);
+        return provider.generate!(call);
+      },
+      doStream: (params: Record<string, unknown>) => {
+        const call = { instance, params };
+        provider.streamCalls.push(call);
+        return provider.stream!(call);
+      },
+    };
+  },
+}));
+
+const answer = (value: string) => ({
+  content: [{ type: "text", text: value }],
+  finishReason: { unified: "stop", raw: "stop" },
+  usage: {
+    inputTokens: {
+      total: 1,
+      noCache: 1,
+      cacheRead: undefined,
+      cacheWrite: undefined,
+    },
+    outputTokens: { total: 1, text: 1, reasoning: 0 },
+  },
+  warnings: [],
+});
+
+const prompt = [
+  { role: "user" as const, content: [{ type: "text" as const, text: "go" }] },
+];
+
+/** A fresh module: its slot counter starts empty for every test. */
+async function claudeCodeModel() {
+  vi.resetModules();
+  const { createClaudeCodeModel } = await import("./claudeCode.js");
+  return createClaudeCodeModel({
+    modelId: "claude-opus-5-5",
+    configDir: "/data/claude/user-dir",
+  });
+}
+
+async function drain(result: { stream: ReadableStream<unknown> }) {
+  const reader = result.stream.getReader();
+  while (!(await reader.read()).done) {
+    // Read to the end: the slot is held until the stream closes.
+  }
+}
+
+beforeEach(() => {
+  provider.instances = 0;
+  provider.generateCalls = [];
+  provider.streamCalls = [];
+  provider.generate = async () => answer("ok");
+  provider.stream = async () => textStep("ok");
+  vi.stubEnv("CLAUDE_CODE_EXECUTABLE", "/usr/bin/claude");
+  vi.stubEnv("CLAUDE_CODE_MAX_CONCURRENCY", "1");
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllEnvs();
+});
+
+describe("thinking", () => {
+  it("asks for the thinking summary, with the effort of the reasoning level", async () => {
+    const model = await claudeCodeModel();
+    await drain(
+      await model.doStream({ prompt, reasoning: "high" } as never),
+    );
+    expect(provider.streamCalls[0].params.providerOptions).toEqual({
+      "claude-code": {
+        thinking: { type: "adaptive", display: "summarized" },
+        effort: "high",
+      },
+    });
+  });
+
+  it("asks for the summary when the reasoning level is the provider's own", async () => {
+    const model = await claudeCodeModel();
+    await drain(await model.doStream({ prompt } as never));
+    expect(provider.streamCalls[0].params.providerOptions).toEqual({
+      "claude-code": { thinking: { type: "adaptive", display: "summarized" } },
+    });
+  });
+
+  it("leaves switching thinking off to the provider", async () => {
+    const model = await claudeCodeModel();
+    await drain(
+      await model.doStream({ prompt, reasoning: "none" } as never),
+    );
+    expect(provider.streamCalls[0].params.reasoning).toBe("none");
+    expect(provider.streamCalls[0].params.providerOptions).toBeUndefined();
+  });
+});
+
+describe("sessions", () => {
+  it("answers each call with a provider model of its own", async () => {
+    // The provider's model resumes the session of its previous call, which
+    // was never kept: a retry on the same model could only fail.
+    const model = await claudeCodeModel();
+    await model.doGenerate({ prompt } as never);
+    await model.doGenerate({ prompt } as never);
+    await drain(await model.doStream({ prompt } as never));
+    const used = [
+      ...provider.generateCalls.map((call) => call.instance),
+      ...provider.streamCalls.map((call) => call.instance),
+    ];
+    expect(new Set(used).size).toBe(3);
+  });
+});
+
+describe("slots", () => {
+  it("ends a one-shot call that never answers, and gives its slot back", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("STREAM_IDLE_TIMEOUT_MS", "30000");
+    const model = await claudeCodeModel();
+    provider.generate = () => new Promise(() => {});
+
+    const hung = model.doGenerate({ prompt } as never);
+    const outcome = expect(hung).rejects.toThrow(
+      /First chunk timeout of 30000ms exceeded/,
+    );
+    await vi.advanceTimersByTimeAsync(30_001);
+    await outcome;
+    // The process is told to stop, not just abandoned.
+    const signal = provider.generateCalls[0].params.abortSignal as AbortSignal;
+    expect(signal.aborted).toBe(true);
+
+    // With one slot, this only answers if the hung call returned it.
+    provider.generate = async () => answer("next");
+    await expect(model.doGenerate({ prompt } as never)).resolves.toMatchObject(
+      { content: [{ type: "text", text: "next" }] },
+    );
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("ends a one-shot call when its caller gives up", async () => {
+    const model = await claudeCodeModel();
+    provider.generate = () => new Promise(() => {});
+    const caller = new AbortController();
+
+    const pending = model.doGenerate({
+      prompt,
+      abortSignal: caller.signal,
+    } as never);
+    const outcome = expect(pending).rejects.toThrow("Chat title timed out");
+    await vi.waitFor(() => expect(provider.generateCalls).toHaveLength(1));
+    caller.abort(new DOMException("Chat title timed out", "TimeoutError"));
+    await outcome;
+
+    provider.generate = async () => answer("next");
+    await expect(
+      model.doGenerate({ prompt } as never),
+    ).resolves.toBeDefined();
+  });
+
+  it("starts a waiting chat turn before one-shot calls that queued earlier", async () => {
+    const model = await claudeCodeModel();
+    const started: string[] = [];
+    let finishFirst!: () => void;
+    provider.generate = ({ params }) => {
+      started.push(String(params.maxOutputTokens));
+      if (params.maxOutputTokens !== 1) return Promise.resolve(answer("ok"));
+      return new Promise((resolve) => {
+        finishFirst = () => resolve(answer("first"));
+      });
+    };
+    provider.stream = async () => {
+      started.push("chat");
+      return step(...text("ok"), finish("stop"));
+    };
+
+    // One slot: the first call holds it while the others queue in this order.
+    const first = model.doGenerate({ prompt, maxOutputTokens: 1 } as never);
+    await vi.waitFor(() => expect(started).toEqual(["1"]));
+    const cell = model.doGenerate({ prompt, maxOutputTokens: 2 } as never);
+    const chat = model.doStream({ prompt } as never).then(drain);
+
+    finishFirst();
+    await Promise.all([first, cell, chat]);
+    expect(started).toEqual(["1", "chat", "2"]);
+  });
+});

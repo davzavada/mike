@@ -39,7 +39,29 @@ with `@anthropic-ai/claude-agent-sdk`, once per request:
 - The subprocess environment is built from scratch. The deployment's
   provider keys are never passed to it.
 - Mike sends the whole conversation on each turn; Claude Code keeps no
-  session between requests.
+  session between requests, and every call, a retry included, starts a new
+  one. Claude Code's own request for a session title is switched off.
+- Mike asks for the summary of the model's thinking, as it does through the
+  API. Claude 5 models send none unless asked, and a model that thinks for
+  longer than `STREAM_CHUNK_TIMEOUT_MS` without sending anything is ended as
+  one that stopped responding.
+
+## Deadlines and waiting
+
+A chat turn has the same silence limits as with any other provider
+(`STREAM_FIRST_CHUNK_TIMEOUT_MS`, `STREAM_CHUNK_TIMEOUT_MS`). Time a tool
+takes inside Claude Code does not count, and the model's request after a
+tool result gets the first-chunk limit again.
+
+A call that is not streamed (a chat title, a tabular review cell) is ended
+after `STREAM_IDLE_TIMEOUT_MS`, five minutes by default, counted from the
+start of its Claude Code process. The process is stopped and its slot freed.
+
+When every slot is taken, further requests wait. A waiting chat turn starts
+before waiting one-shot calls, because its wait counts against its
+first-chunk limit: a turn that waits longer than that fails with "Claude
+stopped responding". If that happens while a large tabular review runs or
+several people chat at once, raise `CLAUDE_CODE_MAX_CONCURRENCY`.
 
 ## Configuration
 

@@ -13,11 +13,13 @@ import type { LanguageModel, LanguageModelMiddleware } from "ai" with {
   "resolution-mode": "import",
 };
 
+import { abortable } from "../abortable";
 import {
   claudeCodeEnv,
   claudeCodeExecutable,
   claudeCodeMaxConcurrency,
 } from "../claudeCode/config";
+import { streamRunDeadlines } from "../runtimeConfig";
 import { UserFacingError } from "../userFacingError";
 import { ProviderConfigurationError } from "./providerErrors";
 import type { OpenAIToolSchema } from "./types";
@@ -45,7 +47,14 @@ export type ClaudeCodeRequest = {
 
 type SdkModel = Exclude<LanguageModel, string>;
 
-const waiters: Array<{ start: () => void; signal?: AbortSignal; onAbort: () => void }> = [];
+type Waiter = {
+  start: () => void;
+  onAbort: () => void;
+  /** Someone is watching this answer arrive (a streamed chat turn). */
+  interactive: boolean;
+};
+
+const waiters: Waiter[] = [];
 let running = 0;
 
 // Set while one of Mike's tools runs on behalf of a Claude Code process. A
@@ -59,21 +68,27 @@ const insideToolCall = new AsyncLocalStorage<true>();
  * so a burst of requests queues here instead of exhausting the host. Returns
  * the function that gives the slot back.
  */
-async function acquireSlot(signal?: AbortSignal): Promise<() => void> {
+async function acquireSlot(
+  signal: AbortSignal | undefined,
+  interactive: boolean,
+): Promise<() => void> {
   if (insideToolCall.getStore()) return () => {};
-  await waitForSlot(signal);
+  await waitForSlot(signal, interactive);
   return releaseSlot;
 }
 
-function waitForSlot(signal?: AbortSignal): Promise<void> {
+function waitForSlot(
+  signal: AbortSignal | undefined,
+  interactive: boolean,
+): Promise<void> {
   if (signal?.aborted) return Promise.reject(signal.reason);
   if (running < claudeCodeMaxConcurrency()) {
     running += 1;
     return Promise.resolve();
   }
   return new Promise((resolve, reject) => {
-    const waiter = {
-      signal,
+    const waiter: Waiter = {
+      interactive,
       start: () => {
         signal?.removeEventListener("abort", waiter.onAbort);
         resolve();
@@ -85,7 +100,14 @@ function waitForSlot(signal?: AbortSignal): Promise<void> {
       },
     };
     signal?.addEventListener("abort", waiter.onAbort, { once: true });
-    waiters.push(waiter);
+    // One-shot work (table cells, titles) arrives in bursts and nobody
+    // watches it arrive. A chat turn is watched, and its wait here counts
+    // against its first-output deadline, so it goes ahead of that work.
+    const firstOneShot = interactive
+      ? waiters.findIndex((queued) => !queued.interactive)
+      : -1;
+    if (firstOneShot >= 0) waiters.splice(firstOneShot, 0, waiter);
+    else waiters.push(waiter);
   });
 }
 
@@ -130,18 +152,54 @@ function subscriptionError(error: unknown, kinds: ErrorKinds): unknown {
 
 function slotLimit(kinds: ErrorKinds): LanguageModelMiddleware {
   return {
-    wrapGenerate: async ({ doGenerate, params }) => {
-      const giveBack = await acquireSlot(params.abortSignal);
+    wrapGenerate: async ({ model, params }) => {
+      const giveBack = await acquireSlot(params.abortSignal, false);
+      // A streamed turn is bounded by providerDeadlines; a one-shot call has
+      // no stream to time, and unlike an HTTP request no transport timeout
+      // either. Without a limit, a process that hangs keeps its slot for
+      // good, and once every slot is held no Claude request is answered
+      // again. The clock starts with the process, not with the wait above.
+      const limitMs = streamRunDeadlines().idleMs;
+      const controller = new AbortController();
+      const forwardAbort = () => controller.abort(params.abortSignal?.reason);
+      if (params.abortSignal?.aborted) forwardAbort();
+      else
+        params.abortSignal?.addEventListener("abort", forwardAbort, {
+          once: true,
+        });
+      // The answer arrives in one piece, so this is its first-chunk deadline:
+      // the wording is what marks a provider that stopped responding.
+      const timer = setTimeout(
+        () =>
+          controller.abort(
+            new DOMException(
+              `First chunk timeout of ${limitMs}ms exceeded`,
+              "TimeoutError",
+            ),
+          ),
+        limitMs,
+      );
+      timer.unref?.();
       try {
-        return await doGenerate();
+        controller.signal.throwIfAborted();
+        // abortable: the slot comes back even if the process outlives its
+        // abort signal.
+        return await abortable(
+          Promise.resolve(
+            model.doGenerate({ ...params, abortSignal: controller.signal }),
+          ),
+          controller.signal,
+        );
       } catch (error) {
         throw subscriptionError(error, kinds);
       } finally {
+        clearTimeout(timer);
+        params.abortSignal?.removeEventListener("abort", forwardAbort);
         giveBack();
       }
     },
     wrapStream: async ({ doStream, params }) => {
-      const giveBack = await acquireSlot(params.abortSignal);
+      const giveBack = await acquireSlot(params.abortSignal, true);
       let released = false;
       const release = () => {
         if (released) return;
@@ -185,6 +243,51 @@ function slotLimit(kinds: ErrorKinds): LanguageModelMiddleware {
         release();
         throw subscriptionError(error, kinds);
       }
+    },
+  };
+}
+
+/** Claude Code's effort level for each reasoning level Mike asks for. */
+const EFFORT_BY_REASONING: Record<
+  string,
+  "low" | "medium" | "high" | "xhigh" | "max"
+> = {
+  minimal: "low",
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "xhigh",
+  max: "max",
+};
+
+/**
+ * Ask for the summary of the model's thinking. Claude 5 models return none
+ * unless asked, and Claude Code does not ask on its own: the stream then
+ * carries nothing for as long as the model thinks, and providerDeadlines ends
+ * a long thought as a provider that stopped responding. The direct Anthropic
+ * adapter asks for the same summary.
+ *
+ * Naming the thinking mode makes the provider ignore the request's reasoning
+ * level, so the matching effort is set here with it.
+ */
+function summarizedThinking(): LanguageModelMiddleware {
+  return {
+    transformParams: async ({ params }) => {
+      const reasoning: string | undefined = params.reasoning;
+      // "none" is left to the provider, which switches thinking off.
+      if (reasoning === "none") return params;
+      const effort = reasoning ? EFFORT_BY_REASONING[reasoning] : undefined;
+      return {
+        ...params,
+        providerOptions: {
+          ...params.providerOptions,
+          "claude-code": {
+            ...params.providerOptions?.["claude-code"],
+            thinking: { type: "adaptive", display: "summarized" },
+            ...(effort ? { effort } : {}),
+          },
+        },
+      };
     },
   };
 }
@@ -250,6 +353,10 @@ function subprocessEnv(configDir: string): Record<string, string | undefined> {
     ...claudeCodeEnv(configDir),
     // The person's claude.ai connectors are theirs, not this application's.
     ENABLE_CLAUDEAI_MCP_SERVERS: "false",
+    // Claude Code names each session with a model request of its own, which
+    // repeats the conversation. Nothing shows that name, and the request
+    // would count against the person's plan on every turn.
+    CLAUDE_CODE_DISABLE_TERMINAL_TITLE: "1",
   };
 }
 
@@ -266,34 +373,46 @@ export async function createClaudeCodeModel(
     import("ai"),
   ]);
   const provider = claudeCode.createClaudeCode();
-  const server = request.tools ? await toolServer(request.tools) : null;
-  const model = provider(target.modelId, {
-    pathToClaudeCodeExecutable: claudeCodeExecutable(),
-    // Its warnings are about model ids it does not list; errors still throw.
-    logger: false,
-    cwd: target.configDir,
-    env: subprocessEnv(target.configDir),
-    // No built-in tools, no settings or MCP servers from disk, nothing kept
-    // between requests: Mike holds the conversation and sends it each turn.
-    tools: [],
-    settingSources: [],
-    strictMcpConfig: true,
-    persistSession: false,
-    // Anything not pre-approved below is refused without a prompt.
-    permissionMode: "dontAsk",
-    ...(request.systemPrompt !== undefined
-      ? { systemPrompt: request.systemPrompt }
-      : {}),
-    maxTurns: Math.min(100, Math.max(1, request.maxTurns ?? 1)),
-    ...(server
-      ? {
-          mcpServers: { [CLAUDE_CODE_TOOL_SERVER]: server },
-          allowedTools: [`mcp__${CLAUDE_CODE_TOOL_SERVER}__*`],
-        }
-      : { allowedTools: [] }),
-  });
+  // The provider's model remembers the session of its last call and resumes
+  // it on the next one, and no session is kept to resume. A second call on
+  // the same model (the SDK's retry after an overloaded or rate-limited
+  // attempt) would fail with "No conversation found" and hide the first
+  // failure, so every call gets a model, and a tool server, of its own.
+  const fresh = async () => {
+    const server = request.tools ? await toolServer(request.tools) : null;
+    return provider(target.modelId, {
+      pathToClaudeCodeExecutable: claudeCodeExecutable(),
+      // Its warnings are about model ids it does not list; errors still throw.
+      logger: false,
+      cwd: target.configDir,
+      env: subprocessEnv(target.configDir),
+      // No built-in tools, no settings or MCP servers from disk, nothing kept
+      // between requests: Mike holds the conversation and sends it each turn.
+      tools: [],
+      settingSources: [],
+      strictMcpConfig: true,
+      persistSession: false,
+      // Anything not pre-approved below is refused without a prompt.
+      permissionMode: "dontAsk",
+      ...(request.systemPrompt !== undefined
+        ? { systemPrompt: request.systemPrompt }
+        : {}),
+      maxTurns: Math.min(100, Math.max(1, request.maxTurns ?? 1)),
+      ...(server
+        ? {
+            mcpServers: { [CLAUDE_CODE_TOOL_SERVER]: server },
+            allowedTools: [`mcp__${CLAUDE_CODE_TOOL_SERVER}__*`],
+          }
+        : { allowedTools: [] }),
+    });
+  };
+  const sessionPerCall: LanguageModelMiddleware = {
+    wrapGenerate: async ({ params }) => (await fresh()).doGenerate(params),
+    wrapStream: async ({ params }) => (await fresh()).doStream(params),
+  };
   return wrapLanguageModel({
-    model,
-    middleware: slotLimit(claudeCode),
+    // Stands for the model's identity only; sessionPerCall answers the calls.
+    model: await fresh(),
+    middleware: [summarizedThinking(), slotLimit(claudeCode), sessionPerCall],
   }) as SdkModel;
 }
