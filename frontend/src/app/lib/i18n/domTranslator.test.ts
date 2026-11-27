@@ -14,6 +14,11 @@ const translate = createTranslator({
     },
     "Delete {1}?": "Smazat {1}?",
     "{1} of {2}": "{1} z {2}",
+    "delete {1} project{2}": {
+        one: "smazat {1} projekt",
+        few: "smazat {1} projekty",
+        other: "smazat {1} projektů",
+    },
     "Shared by {2} on {1}": "Sdílel(a) {2} dne {1}",
 });
 
@@ -34,6 +39,9 @@ describe("createTranslator", () => {
         expect(translate("3 documents")).toBe("3 dokumenty");
         expect(translate("5 documents")).toBe("5 dokumentů");
         expect(translate("0 documents")).toBe("0 dokumentů");
+        // An English ending the Czech forms leave out, or no ending at all.
+        expect(translate("delete 3 projects")).toBe("smazat 3 projekty");
+        expect(translate("delete 1 project")).toBe("smazat 1 projekt");
         // A folder's name, not a count.
         expect(translate("Signed documents")).toBeNull();
     });

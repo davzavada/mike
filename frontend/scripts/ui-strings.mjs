@@ -154,6 +154,9 @@ function visit(node, file) {
                 for (const text of expressionStrings(argument)) if (isProse(text) && /\s/.test(text)) add(text, file);
             }
         }
+    } else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && /(^[A-Z][A-Z0-9_]+$|(Message|Text|Label|Title|Description|Hint|Copy)$)/.test(node.name.text)) {
+        // const SESSION_ERROR_MESSAGE = "We could not check your session."
+        for (const text of expressionStrings(node.initializer)) if (isProse(text) && /\s/.test(text) && /^[A-Z]/.test(text)) add(text, file);
     } else if (ts.isReturnStatement(node) || ts.isArrowFunction(node)) {
         // Small label helpers: `return "Current session"` / `() => "…"`.
         const value = ts.isReturnStatement(node) ? node.expression : !ts.isBlock(node.body) ? node.body : null;
@@ -166,8 +169,8 @@ function walk(dir) {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
         const full = path.join(dir, entry.name);
         if (entry.isDirectory()) {
-            if (!["node_modules", "__tests__", "stories", "i18n"].includes(entry.name)) walk(full);
-        } else if (/\.(tsx|ts)$/.test(entry.name) && !/\.(test|stories|d)\.tsx?$/.test(entry.name)) {
+            if (!["node_modules", "__tests__", "stories"].includes(entry.name)) walk(full);
+        } else if (/\.(tsx|ts)$/.test(entry.name) && !/\.(test|stories|d)\.tsx?$/.test(entry.name) && entry.name !== "domTranslator.ts") {
             const source = ts.createSourceFile(full, fs.readFileSync(full, "utf8"), ts.ScriptTarget.Latest, true, entry.name.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
             visit(source, full);
         }
@@ -185,7 +188,7 @@ const rows = [...found.entries()]
 
 if (byArea) {
     const areas = new Map();
-    for (const [text, files] of rows) {
+    for (const [, files] of rows) {
         const first = [...files][0].split("/");
         const area = first.slice(0, first[0] === "packages" ? 2 : 5).join("/");
         areas.set(area, (areas.get(area) ?? 0) + 1);

@@ -50,7 +50,12 @@ function compilePattern(source: string, value: string | PluralForms): Pattern {
         .map((part, index) => {
             if (index % 2 === 0) return escapeRegex(part);
             holes.push(part);
-            return weak || (counted && holes.length === 1) ? NUMBER : "(.+?)";
+            if (weak || (counted && holes.length === 1)) return NUMBER;
+            // A hole right after a letter is an English ending ("project{2}"
+            // with "s" or nothing) and may be empty.
+            return /[A-Za-z]$/.test(source.split(HOLES)[index - 1] ?? "")
+                ? "(.*?)"
+                : "(.+?)";
         })
         .join("");
     return { regex: new RegExp(`^${regex}$`, "s"), holes, value };
