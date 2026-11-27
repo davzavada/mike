@@ -9,7 +9,9 @@ import { streamChunkTimeouts } from "../runtimeConfig";
  *
  * `toolsRunInProvider` is for a model that runs tools inside its own stream
  * (Claude Code): the wait between a tool call and its result is the tool's
- * time, not the model's, so the chunk clock stops while a call is open.
+ * time, not the model's, so the chunk clock stops while a call is open. The
+ * results start the model's next request inside the same stream, which gets
+ * the first-chunk allowance a new request to any other provider gets.
  */
 export function providerDeadlines(
   onActivity?: () => void,
@@ -86,9 +88,11 @@ export function providerDeadlines(
                     break;
                   case "tool-result":
                     if (openToolCalls.delete(part.toolCallId)) {
-                      // The model speaks next once every open call is back.
+                      // Once every open call is back the model is asked
+                      // again: a new request, with its own time to first
+                      // output.
                       if (openToolCalls.size === 0)
-                        arm("Chunk", limits.chunkMs);
+                        arm("First chunk", limits.firstChunkMs);
                       onActivity?.();
                     }
                     break;
