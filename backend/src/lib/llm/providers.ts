@@ -235,6 +235,11 @@ async function createAnthropicAdapter(args: {
     model: anthropic(args.model),
     modelId: args.model,
     anthropicCachePoint: true,
+    // Forward the Messages API's pings to the provider deadline, which
+    // otherwise ends a response whose thinking is hidden (Claude 5 and Opus
+    // 4.7+ by default) as a stalled one. The SDK reads this option itself
+    // and sends nothing for it.
+    requestProviderOptions: { [args.provider]: { includePings: true } },
     keySource: args.keySource,
     supportsReasoning: args.supportsReasoning,
     // Only Anthropic itself runs the search; compatible gateways do not.
@@ -658,8 +663,13 @@ async function createProviderAdapter(
   apiKeys?: UserApiKeys,
 ): Promise<AiSdkAdapterConfig> {
   const adapter = await buildProviderAdapter(model, apiKeys);
-  const requestProviderOptions = noRetentionOptions(adapter.provider);
-  return requestProviderOptions ? { ...adapter, requestProviderOptions } : adapter;
+  const noRetention = noRetentionOptions(adapter.provider);
+  return noRetention
+    ? {
+        ...adapter,
+        requestProviderOptions: { ...adapter.requestProviderOptions, ...noRetention },
+      }
+    : adapter;
 }
 
 async function buildProviderAdapter(

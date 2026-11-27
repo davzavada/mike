@@ -14,6 +14,9 @@ export function providerDeadlines(
       const controller = new AbortController();
       const forwardAbort = () => controller.abort(params.abortSignal?.reason);
       let timer: ReturnType<typeof setTimeout> | undefined;
+      // The deadline a liveness signal renews: the first-output one until
+      // the model produces output, then the gap between output chunks.
+      let phase: [label: string, ms: number] = ["First chunk", limits.firstChunkMs];
       const cleanup = () => {
         clearTimeout(timer);
         params.abortSignal?.removeEventListener("abort", forwardAbort);
@@ -37,7 +40,7 @@ export function providerDeadlines(
         params.abortSignal?.addEventListener("abort", forwardAbort, {
           once: true,
         });
-      arm("First chunk", limits.firstChunkMs);
+      arm(...phase);
       try {
         controller.signal.throwIfAborted();
         const pending = Promise.resolve(
@@ -71,8 +74,20 @@ export function providerDeadlines(
                   case "tool-input-delta":
                   case "tool-call":
                   case "file":
-                    arm("Chunk", limits.chunkMs);
+                    phase = ["Chunk", limits.chunkMs];
+                    arm(...phase);
                     onActivity?.();
+                    break;
+                  // Claude 5 and Opus 4.7+ hide their thinking by default:
+                  // the stream holds a thinking block start, then only pings
+                  // until the signature, for as long as the model thinks.
+                  // Both prove the provider is alive, so they renew this
+                  // deadline. They are not output, so they leave onActivity
+                  // (the run's idle deadline) to bound a model that never
+                  // answers.
+                  case "reasoning-start":
+                  case "ping":
+                    arm(...phase);
                     break;
                   case "finish":
                   case "error":
