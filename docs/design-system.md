@@ -201,6 +201,11 @@ keeps that title on the line of the sidebar's logo text. The settings areas
 (`SettingsShell`) are titled by the same breadcrumbs ("Settings › Memory"),
 and each opens on an overview of its sections as cards (`SettingsOverview`).
 
+On iPhone and iPad, text fields render at 16px or more whatever utility they
+carry: iOS zooms the page into a focused field with smaller text. The rule is
+at the end of `globals.css` and applies only there, so size a field for the
+desktop design and check that it still fits at 16px.
+
 ## Spacing and radius
 
 There is no bespoke spacing scale — Tailwind's default applies. The de facto
