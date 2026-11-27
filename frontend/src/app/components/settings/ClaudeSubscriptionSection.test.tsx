@@ -31,6 +31,11 @@ vi.mock("@/app/components/popups/MfaVerificationPopup", () => ({
     MfaVerificationPopup: () => null,
 }));
 
+// Covered by its own test; here only whether it is shown.
+vi.mock("@/app/components/settings/ClaudeSubscriptionUsage", () => ({
+    ClaudeSubscriptionUsage: () => <div data-testid="plan-usage" />,
+}));
+
 const status = (
     overrides: Partial<ClaudeSubscriptionStatus> = {},
 ): ClaudeSubscriptionStatus => ({
@@ -79,6 +84,7 @@ describe("ClaudeSubscriptionSection", () => {
         render(<ClaudeSubscriptionSection />);
 
         expect(await screen.findByText("Not connected")).toBeInTheDocument();
+        expect(screen.queryByTestId("plan-usage")).not.toBeInTheDocument();
         await user.click(screen.getByRole("button", { name: "Connect" }));
 
         const link = await screen.findByRole("link", {
@@ -95,6 +101,7 @@ describe("ClaudeSubscriptionSection", () => {
         expect(
             await screen.findByText("person@example.com · max plan"),
         ).toBeInTheDocument();
+        expect(screen.getByTestId("plan-usage")).toBeInTheDocument();
         expect(api.complete).toHaveBeenCalledWith("abc123#state");
         expect(api.reloadProfile).toHaveBeenCalledTimes(1);
         expect(
@@ -114,6 +121,7 @@ describe("ClaudeSubscriptionSection", () => {
             await screen.findByRole("button", { name: "Disconnect" }),
         );
         expect(await screen.findByText("Not connected")).toBeInTheDocument();
+        expect(screen.queryByTestId("plan-usage")).not.toBeInTheDocument();
         expect(api.reloadProfile).toHaveBeenCalledTimes(1);
     });
 

@@ -139,6 +139,15 @@ export const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
         keywords: ["font", "typeface", "typography", "serif", "sans-serif", "garamond", "inter", "text", "reading", "letters"],
         href: "/settings/appearance#fonts",
     },
+    {
+        id: "appearance-language",
+        tabId: "appearance",
+        tab: "Appearance",
+        title: "Language",
+        description: "Show the interface in English or Czech.",
+        keywords: ["language", "interface language", "czech", "čeština", "cestina", "english", "jazyk", "translation", "locale", "michal"],
+        href: "/settings/appearance#language",
+    },
 
     // Features
     {

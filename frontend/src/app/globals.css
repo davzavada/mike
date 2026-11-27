@@ -574,3 +574,41 @@ html[data-reading-font="system-sans"] {
     --font-eb-garamond: system-ui, -apple-system, "Segoe UI", Roboto,
         sans-serif;
 }
+
+/* ─── Text entry on iPhone and iPad ─────────────────────────────── */
+/* iOS zooms the page when a focused field's text is smaller than 16px and
+   leaves it zoomed. Only WebKit on iOS supports -webkit-touch-callout, so
+   fields keep their designed size everywhere else. Unlayered on purpose: it
+   has to win over the `text-xs` / `text-sm` utilities on each field. `1em`
+   is the size the field would inherit, so a title edited in place keeps its
+   heading size; fields given a larger utility of their own are left out, as
+   are the spreadsheet and DOCX editors, which lay out their own controls. */
+@supports (-webkit-touch-callout: none) {
+    :where(input, textarea, select):not(
+            [type="checkbox"],
+            [type="radio"],
+            [type="range"],
+            [type="file"],
+            .text-lg,
+            .text-xl,
+            .text-2xl,
+            .text-3xl,
+            .fortune-container *,
+            .docx-editor *
+        ) {
+        font-size: max(16px, 1em);
+    }
+
+    .markdown-editor-content {
+        font-size: 1rem;
+    }
+
+    /* Keep the editor's headings above its body text at the larger size. */
+    .markdown-editor-content h2 {
+        font-size: 1.125rem;
+    }
+
+    .markdown-editor-content h3 {
+        font-size: 1rem;
+    }
+}

@@ -147,8 +147,15 @@ describe("agent model deadlines", () => {
     vi.unstubAllEnvs();
   });
 
-  /** A stream that opens a tool call, waits, then returns it and answers. */
-  async function slowToolAgent(toolMs: number, withResult: boolean) {
+  /**
+   * A stream that opens a tool call, waits, then returns it and answers,
+   * `answerMs` after the result: the model's next request, in the same stream.
+   */
+  async function slowToolAgent(
+    toolMs: number,
+    withResult: boolean,
+    answerMs = 0,
+  ) {
     const { MockLanguageModelV3 } = await import("ai/test");
     const model = new MockLanguageModelV3({
       doStream: async () => ({
@@ -171,18 +178,22 @@ describe("agent model deadlines", () => {
                 toolName: "mcp__mike__read_document",
                 result: "text",
               });
-              controller.enqueue({ type: "text-start", id: "a" });
-              controller.enqueue({ type: "text-delta", id: "a", delta: "done" });
-              controller.enqueue({ type: "text-end", id: "a" });
-              controller.enqueue({
-                type: "finish",
-                finishReason: { unified: "stop", raw: "stop" },
-                usage: {
-                  inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined },
-                  outputTokens: { total: 1, text: 1, reasoning: 0 },
-                },
-              });
-              controller.close();
+              const answer = () => {
+                controller.enqueue({ type: "text-start", id: "a" });
+                controller.enqueue({ type: "text-delta", id: "a", delta: "done" });
+                controller.enqueue({ type: "text-end", id: "a" });
+                controller.enqueue({
+                  type: "finish",
+                  finishReason: { unified: "stop", raw: "stop" },
+                  usage: {
+                    inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined },
+                    outputTokens: { total: 1, text: 1, reasoning: 0 },
+                  },
+                });
+                controller.close();
+              };
+              if (answerMs) setTimeout(answer, answerMs);
+              else answer();
             }, toolMs);
           },
         }),
@@ -199,10 +210,32 @@ describe("agent model deadlines", () => {
     await expect(pending).resolves.toMatchObject({ fullText: "done" });
   });
 
+  it("the model's request after a tool result gets the first-chunk allowance", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("STREAM_CHUNK_TIMEOUT_MS", "5000");
+    vi.stubEnv("STREAM_FIRST_CHUNK_TIMEOUT_MS", "20000");
+    // 15 s to start answering: longer than a gap inside an answer may be,
+    // within what a new request to any provider is allowed.
+    let outcome: unknown;
+    const pending = streamAiSdk(
+      base,
+      await slowToolAgent(30_000, true, 15_000),
+    ).then(
+      (result) => (outcome = result),
+      (error) => (outcome = error),
+    );
+    for (let second = 0; second < 60 && outcome === undefined; second += 1) {
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+    await pending;
+    expect(outcome).toMatchObject({ fullText: "done" });
+  });
+
   it("a model that goes silent after its tools return still times out", async () => {
     const { MockLanguageModelV3 } = await import("ai/test");
     vi.useFakeTimers();
     vi.stubEnv("STREAM_CHUNK_TIMEOUT_MS", "5000");
+    vi.stubEnv("STREAM_FIRST_CHUNK_TIMEOUT_MS", "20000");
     const model = new MockLanguageModelV3({
       doStream: async () => ({
         stream: new ReadableStream({
@@ -231,7 +264,7 @@ describe("agent model deadlines", () => {
       agentModel: async () => model as never,
     });
     const assertion = expect(pending).rejects.toThrow(/stopped responding/);
-    await vi.advanceTimersByTimeAsync(5001);
+    await vi.advanceTimersByTimeAsync(20_001);
     await assertion;
   });
 });
