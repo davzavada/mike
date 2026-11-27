@@ -11,6 +11,7 @@ import { GlassCardUI, ToggleSwitchUI } from "@mike/ui";
 import { SettingsHeading } from "@/app/components/settings/SettingsHeading";
 import { SettingsRow } from "@/app/components/settings/SettingsRow";
 import { FontSettingsSection } from "@/app/components/settings/FontSettingsSection";
+import { LanguageSettingsSection } from "@/app/components/settings/LanguageSettingsSection";
 
 export default function AppearancePage() {
   const { profile, updateDarkMode } = useUserProfile();
@@ -65,6 +66,7 @@ export default function AppearancePage() {
       </GlassCardUI>
     </section>
     <FontSettingsSection />
+    <LanguageSettingsSection />
     </div>
   );
 }
