@@ -159,6 +159,36 @@ describe("table surface", () => {
         );
     });
 
+    it("sets its first column in line with the page title", () => {
+        const { container } = render(
+            <TableScrollArea>
+                <div>Rows</div>
+            </TableScrollArea>,
+        );
+        // 3px + 1px border + the first cell's 12px = the title's 16px;
+        // 11px + 1px + 12px = 24px from md up.
+        expect(container.firstElementChild).toHaveClass(
+            "mx-[3px]",
+            "md:mx-[11px]",
+        );
+    });
+
+    it("lines a table with grid lines up with the page header by its border", () => {
+        const { container } = render(
+            <TableScrollArea preserveGridBorder>
+                <div>Rows</div>
+            </TableScrollArea>,
+        );
+        // The page header's own margins: the title's on the left, the
+        // buttons' on the right.
+        expect(container.firstElementChild).toHaveClass(
+            "mx-4",
+            "md:ml-6",
+            "md:mr-5",
+        );
+        expect(container.firstElementChild).not.toHaveClass("md:mx-[11px]");
+    });
+
     it("uses the table surface without a persistent liquid-glass class", () => {
         const { container } = render(
             <TableScrollArea>

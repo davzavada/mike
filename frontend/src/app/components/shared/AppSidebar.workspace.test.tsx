@@ -102,6 +102,9 @@ const heading = () =>
 const openAccountMenu = (user: ReturnType<typeof userEvent.setup>) =>
   user.click(screen.getByRole("button", { name: "Account menu" }));
 
+const openWorkspaceMenu = (user: ReturnType<typeof userEvent.setup>) =>
+  user.click(screen.getByRole("button", { name: "Switch workspace" }));
+
 beforeEach(() => {
   vi.clearAllMocks();
   state.workspaceId = "personal";
@@ -163,6 +166,17 @@ describe("AppSidebar workspace switcher", () => {
     render(<AppSidebar isOpen onToggle={vi.fn()} />);
 
     expect(heading()).toHaveTextContent("Mike");
+    // The logo is only the way home.
+    expect(
+      screen.queryByRole("button", { name: "Switch workspace" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Mike" })).toHaveAttribute(
+      "href",
+      "/assistant",
+    );
+    expect(
+      screen.getByRole("link", { name: "Mike" }).querySelector("svg"),
+    ).toBeNull();
     await openAccountMenu(user);
     expect(screen.getByRole("menuitem", { name: "Settings" })).toBeVisible();
     expect(screen.queryByRole("menuitemradio")).not.toBeInTheDocument();
@@ -176,11 +190,12 @@ describe("AppSidebar workspace switcher", () => {
 
     expect(heading()).toHaveTextContent("Acme LLP");
     expect(heading()).not.toHaveTextContent("Mike");
-    // Still the way home, whatever it is called.
-    expect(screen.getByRole("link", { name: "Acme LLP" })).toHaveAttribute(
-      "href",
-      "/assistant",
-    );
+    // The name is the switcher, and says in full which workspace it is.
+    const switcher = screen.getByRole("button", { name: "Switch workspace" });
+    expect(switcher).toContainElement(heading());
+    expect(switcher).toHaveAttribute("title", "Acme LLP");
+    // A chevron says the name opens a menu.
+    expect(switcher.querySelector("svg.lucide-chevron-down")).not.toBeNull();
   });
 
   it("heads the sidebar with plain Mike for personal work, even with organizations to switch to", () => {
@@ -205,15 +220,15 @@ describe("AppSidebar workspace switcher", () => {
     expect(screen.queryByText("Mike")).not.toBeInTheDocument();
   });
 
-  it("sets an organization's name at the size Mike is, in the same fixed header row", () => {
+  it("sets an organization's name at the size Mike is, in the same header row", () => {
     state.organizations = [ACME];
     state.workspaceId = ACME.id;
     const { unmount } = render(<AppSidebar isOpen onToggle={vi.fn()} />);
     const organizationClasses = heading().className;
-    expect(heading()).toHaveClass("text-xl");
+    expect(heading()).toHaveClass("text-lg");
     expect(
       screen.getByRole("button", { name: "Close sidebar" }).parentElement,
-    ).toHaveClass("h-11");
+    ).toHaveClass("h-7", "shrink-0");
     unmount();
 
     // Switching workspace must not change how the header looks.
@@ -233,19 +248,24 @@ describe("AppSidebar workspace switcher", () => {
     ).not.toHaveTextContent("Acme LLP");
   });
 
-  it("lists the workspaces in the account menu and marks the active one", async () => {
+  it("lists the workspaces under the logo and marks the active one", async () => {
     state.organizations = [ACME, BETA];
     state.workspaceId = ACME.id;
     const user = userEvent.setup();
     render(<AppSidebar isOpen onToggle={vi.fn()} />);
 
-    await openAccountMenu(user);
+    await openWorkspaceMenu(user);
     const options = screen.getAllByRole("menuitemradio");
-    expect(options.map((option) => option.textContent)).toEqual([
-      "Personal",
-      "Acme LLP",
-      "Beta Chambers",
-    ]);
+    // Named by the workspace alone: each one's mark is decorative.
+    expect(options).toHaveLength(3);
+    expect(options[0]).toHaveAccessibleName("Personal");
+    expect(options[1]).toHaveAccessibleName("Acme LLP");
+    expect(options[2]).toHaveAccessibleName("Beta Chambers");
+    // Each has a mark: the app's for Personal, a placeholder for an
+    // organization without a logo.
+    expect(
+      options[1].querySelector('[data-slot="workspace-icon-placeholder"]'),
+    ).toHaveTextContent("A");
     // The active one is marked by state, not by colour alone.
     expect(
       screen.getByRole("menuitemradio", { name: "Acme LLP" }),
@@ -253,8 +273,36 @@ describe("AppSidebar workspace switcher", () => {
     expect(
       screen.getByRole("menuitemradio", { name: "Personal" }),
     ).toHaveAttribute("aria-checked", "false");
-    // The rest of the account menu is still there.
+  });
+
+  it("opens the workspace menu across the sidebar, as the account menu does", async () => {
+    state.organizations = [ACME, BETA];
+    state.workspaceId = ACME.id;
+    const user = userEvent.setup();
+    render(<AppSidebar isOpen onToggle={vi.fn()} />);
+
+    const switcher = screen.getByRole("button", { name: "Switch workspace" });
+    // The button reaches the sidebar's inner edge; its padding keeps the logo in.
+    expect(switcher).toHaveClass("w-full", "px-1.5");
+    expect(switcher.parentElement).not.toHaveClass("px-1.5");
+    await openWorkspaceMenu(user);
+    // Its width plus the toggle (28px) and the gap (4px) beside it.
+    expect(screen.getByRole("menu")).toHaveClass(
+      "w-[calc(var(--radix-dropdown-menu-trigger-width)+32px)]",
+    );
+    expect(screen.getByRole("menu")).not.toHaveClass("w-56");
+  });
+
+  it("keeps the workspaces out of the account menu", async () => {
+    state.organizations = [ACME, BETA];
+    state.workspaceId = ACME.id;
+    const user = userEvent.setup();
+    render(<AppSidebar isOpen onToggle={vi.fn()} />);
+
+    await openAccountMenu(user);
     expect(screen.getByRole("menuitem", { name: "Sign out" })).toBeVisible();
+    expect(screen.queryByRole("menuitemradio")).not.toBeInTheDocument();
+    expect(screen.queryByText("Workspace")).not.toBeInTheDocument();
   });
 
   it("sets the Workspace heading over the option text, bold and in normal case", async () => {
@@ -262,7 +310,7 @@ describe("AppSidebar workspace switcher", () => {
     const user = userEvent.setup();
     render(<AppSidebar isOpen onToggle={vi.fn()} />);
 
-    await openAccountMenu(user);
+    await openWorkspaceMenu(user);
     const label = screen.getByText("Workspace");
     const option = screen.getByRole("menuitemradio", { name: "Personal" });
     const horizontalPadding = (element: HTMLElement) =>
@@ -333,7 +381,7 @@ describe("AppSidebar workspace switcher", () => {
     const user = userEvent.setup();
     render(<AppSidebar isOpen onToggle={vi.fn()} />);
 
-    await openAccountMenu(user);
+    await openWorkspaceMenu(user);
     await user.click(
       screen.getByRole("menuitemradio", { name: "Beta Chambers" }),
     );
@@ -355,7 +403,7 @@ describe("AppSidebar workspace switcher", () => {
     const user = userEvent.setup();
     render(<AppSidebar isOpen onToggle={vi.fn()} />);
 
-    await openAccountMenu(user);
+    await openWorkspaceMenu(user);
     await user.click(screen.getByRole("menuitemradio", { name: "Personal" }));
     expect(state.showToast).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ title: "Switched to Personal" }),
@@ -368,7 +416,7 @@ describe("AppSidebar workspace switcher", () => {
     const user = userEvent.setup();
     const view = render(<AppSidebar isOpen onToggle={vi.fn()} />);
 
-    await openAccountMenu(user);
+    await openWorkspaceMenu(user);
     await user.click(
       screen.getByRole("menuitemradio", { name: "Beta Chambers" }),
     );
@@ -398,7 +446,7 @@ describe("AppSidebar workspace switcher", () => {
     const user = userEvent.setup();
     const view = render(<AppSidebar isOpen onToggle={vi.fn()} />);
 
-    await openAccountMenu(user);
+    await openWorkspaceMenu(user);
     await user.click(
       screen.getByRole("menuitemradio", { name: "Beta Chambers" }),
     );
@@ -413,7 +461,7 @@ describe("AppSidebar workspace switcher", () => {
     const user = userEvent.setup();
     render(<AppSidebar isOpen onToggle={vi.fn()} />);
 
-    await openAccountMenu(user);
+    await openWorkspaceMenu(user);
     await user.click(
       screen.getByRole("menuitemradio", { name: "Beta Chambers" }),
     );
@@ -422,17 +470,19 @@ describe("AppSidebar workspace switcher", () => {
     expect(state.showToast).not.toHaveBeenCalled();
   });
 
-  it("keeps the switcher reachable from the collapsed sidebar", async () => {
+  it("leaves the collapsed sidebar's logo to open the sidebar, where the switcher is", async () => {
     state.organizations = [ACME];
+    const onToggle = vi.fn();
     const user = userEvent.setup();
-    render(<AppSidebar isOpen={false} onToggle={vi.fn()} />);
+    render(<AppSidebar isOpen={false} onToggle={onToggle} />);
 
     // The collapsed sidebar has no heading to name the workspace in.
     expect(document.querySelector('[data-slot="sidebar-heading"]')).toBeNull();
-    await openAccountMenu(user);
     expect(
-      screen.getByRole("menuitemradio", { name: "Acme LLP" }),
-    ).toBeVisible();
+      screen.queryByRole("button", { name: "Switch workspace" }),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Open sidebar" }));
+    expect(onToggle).toHaveBeenCalledOnce();
   });
 
   it("loads the active workspace's recent projects, and reloads them on a switch", async () => {
@@ -550,7 +600,7 @@ describe("AppSidebar workspace switcher", () => {
     const horizontalPadding = (element: HTMLElement) =>
       [...element.classList].filter((name) => /^px-/.test(name));
     expect(horizontalPadding(placeholder)).toEqual(horizontalPadding(button));
-    expect(horizontalPadding(placeholder)).toEqual(["px-3.5"]);
+    expect(horizontalPadding(placeholder)).toEqual(["px-1.5"]);
   });
 
   it("does not narrow the recent projects outside a workspace provider", async () => {

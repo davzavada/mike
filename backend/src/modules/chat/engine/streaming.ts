@@ -101,13 +101,16 @@ import {
   CITE_TABLE_CELLS_TOOL,
   createCitationRecorder,
   documentCitations,
+  onlyAddingRefs,
   tabularCitations,
+  unrecordedMarkerRefs,
+  unrecordedMarkersNotice,
 } from "./citeSources";
 import { buildMemoryTurn } from "../../../lib/memory/prompt";
 
 export type { AssistantEvent } from "@mike/contracts";
 import type { AssistantEvent, AssistantErrorCode } from "@mike/contracts";
-import { log } from "../../../lib/log";
+import { log, logEvent } from "../../../lib/log";
 
 /**
  * Tools the model can call that execute outside this process — in the Word
@@ -632,6 +635,15 @@ export async function runLLMStream(params: {
   );
   const recordedCitations = () =>
     limitCitationPayload(citationRecorder.citations());
+  const unrecordedRefs = (answer: string) =>
+    unrecordedMarkerRefs(
+      answer,
+      citationRecorder.citations().map((citation) => citation.ref),
+    );
+  // Refs the finished answer's markers used without a recorded citation.
+  // The model is told once (the `followUp` below), and a call it makes then
+  // may only add these: the answer and its citations have been sent.
+  let repairRefs = null as ReadonlySet<number> | null;
 
   const emitCitations = (status: "partial" | "final") => {
     const snapshot = ++citationSnapshotSeq;
@@ -657,6 +669,26 @@ export async function runLLMStream(params: {
     fullText += iterText;
     events.push({ type: "content", text: iterText });
     iterText = "";
+  };
+
+  // One start frame per call, whichever of the input start and the completed
+  // call reports it first. cite_sources opens its "Recording citations" step
+  // there, so the step covers the model writing every quote as well as the
+  // server checking them; its citations_recorded result completes it. Any
+  // other tool gets a tool_call_start placeholder until its own events arrive.
+  const announcedToolCalls = new Set<string>();
+  const announceToolCall = (call: { id: string; name: string }) => {
+    if (announcedToolCalls.has(call.id)) return;
+    announcedToolCalls.add(call.id);
+    flushText();
+    subagentRun?.onToolStart(call.name);
+    write(
+      `data: ${JSON.stringify(
+        call.name === CITE_SOURCES_TOOL_NAME
+          ? { type: "citations_recorded_start" }
+          : { type: "tool_call_start", name: call.name },
+      )}\n\n`,
+    );
   };
 
   const flushPartialTurn = () => {
@@ -922,6 +954,18 @@ export async function runLLMStream(params: {
       providerWebSearch:
         providerSearches > 0 ? { maxSearches: providerSearches } : null,
       finishWithoutToolsOnLastStep: isSubagent,
+      followUp: turnTools.some((tool) => toolName(tool) === CITE_SOURCES_TOOL_NAME)
+        ? (answer) => {
+            const refs = unrecordedRefs(answer);
+            if (refs.length) repairRefs = new Set(refs);
+            return refs.length
+              ? {
+                  tool: CITE_SOURCES_TOOL_NAME,
+                  instruction: unrecordedMarkersNotice(refs),
+                }
+              : null;
+          }
+        : undefined,
       callbacks: {
         onActivity: params.onActivity,
         onUsage: (usage, finishReason) => {
@@ -959,19 +1003,17 @@ export async function runLLMStream(params: {
           write(`data: ${JSON.stringify({ type: "reasoning_block_end" })}\n\n`);
           iterReasoning = "";
         },
-        // Fires as soon as the model has written a tool call, while the step's
-        // tools run only once the whole step ends. Flushes any buffered text
-        // so it's emitted in order, then lets the client show "Working…"
-        // until the tool's first event arrives.
+        // Announced when the model starts writing a tool call, not when it
+        // finishes: a long input (cite_sources with every quote) otherwise
+        // streams behind a stale "Thinking…" line. Flushes any buffered text
+        // so it's emitted in order, then lets the client show the tool's
+        // label until its first event arrives.
+        onToolInputStart: (call) => announceToolCall(call),
+        // Fires once the model has written the whole call, while the step's
+        // tools run only once the whole step ends. Announces a call whose
+        // provider reported no input start.
         onToolCallStart: (call) => {
-          flushText();
-          subagentRun?.onToolStart(call.name);
-          write(
-            `data: ${JSON.stringify({
-              type: "tool_call_start",
-              name: call.name,
-            })}\n\n`,
-          );
+          announceToolCall(call);
           if (
             delegateContext &&
             call.name === DELEGATE_TOOL_NAME &&
@@ -1173,9 +1215,12 @@ export async function runLLMStream(params: {
         // change the version or evidence available to the citation recorder.
         // In call order: a later call replaces the refs an earlier one set.
         for (const call of citeCalls) {
-          // The step shows as in progress while the quotes are checked.
-          write(`data: ${JSON.stringify({ type: "citations_recorded_start" })}\n\n`);
-          const { content, event } = await citationRecorder.record(call.input);
+          // Normally opened when the model began writing the call; a call
+          // that reached here unannounced opens its step now.
+          announceToolCall(call);
+          const { content, event } = await citationRecorder.record(
+            repairRefs ? onlyAddingRefs(call.input, repairRefs) : call.input,
+          );
           clientResultByCallId.set(call.id, content);
           events.push(event);
           // Publish the backing rows before enabling the finished step's source actions.
@@ -1290,6 +1335,14 @@ export async function runLLMStream(params: {
   }
 
   flushText();
+
+  if (repairRefs) {
+    logEvent("info", "chat/citations", "answer used markers without recorded citations", {
+      unrecorded: repairRefs.size,
+      still_unrecorded: unrecordedRefs(fullText).length,
+      sources: citesTableCells ? "tabular_cells" : "documents",
+    });
+  }
 
   // The citations recorded with cite_sources, each checked when recorded.
   const citations = recordedCitations();

@@ -284,8 +284,16 @@ export function TableScrollArea({
     return (
         <div
             className={cn(
-                "mx-3 mb-2 min-h-0 min-w-0 flex-1 md:mx-6 md:mb-3",
-                preserveGridBorder && "rounded-2xl",
+                "mb-2 min-h-0 min-w-0 flex-1 md:mb-3",
+                preserveGridBorder
+                    ? // A table with drawn grid lines lines its outer border
+                      // up with the page header: the title on the left (16px,
+                      // 24px from md up) and the header's buttons on the right
+                      // (16px, 20px from md up).
+                      "mx-4 rounded-2xl md:ml-6 md:mr-5"
+                    : // Otherwise the first column's checkbox or text (1px
+                      // border plus 12px padding in) lines up with the title.
+                      "mx-[3px] md:mx-[11px]",
                 className,
             )}
         >

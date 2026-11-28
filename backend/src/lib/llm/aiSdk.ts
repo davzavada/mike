@@ -31,6 +31,8 @@ import {
 import { createRawLlmStreamRecorder, logRawLlmStream } from "./rawStreamLog";
 import type { ClaudeCodeRequest, ClaudeCodeTools } from "./claudeCode";
 import { randomUUID } from "node:crypto";
+import { logEvent } from "../log";
+import { safeError } from "../safeError";
 
 installProviderWarningLogger();
 
@@ -385,6 +387,9 @@ function toAiSdkTools(
   sdk?: Pick<typeof AiSdk, "jsonSchema" | "tool">,
   onRunToolsFailure?: (error: unknown) => void,
   inputChecker?: ToolInputChecker,
+  /** Tools left without an executor are still defined, so the model's
+   *  earlier calls to them stay valid history, but nothing runs them. */
+  canExecute: (name: string) => boolean = () => true,
 ): ToolSet | undefined {
   if (!schemas.length) return undefined;
   if (!sdk) throw new Error("AI SDK tool helpers are unavailable.");
@@ -407,7 +412,7 @@ function toAiSdkTools(
           schema.function.parameters as never,
           validate ? { validate } : undefined,
         ),
-        ...(batcher
+        ...(batcher && canExecute(schema.function.name)
           ? {
               execute: (
                 input: Record<string, unknown>,
@@ -615,6 +620,13 @@ export function withPrefixCacheHints(
   };
 }
 
+/**
+ * The finish reason onUsage reports for the follow-up step: its tool call
+ * records what the finished answer left out and is not a step of the
+ * answer's tool loop, so a step budget must not treat it as one.
+ */
+export const FOLLOW_UP_FINISH_REASON = "follow-up";
+
 export async function streamAiSdk(
   params: StreamChatParams,
   config: AiSdkAdapterConfig,
@@ -723,7 +735,10 @@ export async function streamAiSdk(
           ),
         })
       : config.model;
-    const result = sdk.streamText({
+    // Everything but the conversation and its step limits, shared by the
+    // answer and its follow-up step. An agent model has no follow-up step:
+    // the SDK holds none of Mike's tools for it (functionTools is unset).
+    const callOptions = {
       model: sdk.wrapLanguageModel({
         model,
         middleware: [
@@ -735,16 +750,13 @@ export async function streamAiSdk(
       }),
       // An agent model takes the system prompt as its own, above.
       system: config.agentModel ? undefined : params.systemPrompt,
-      messages: cacheHints.messages,
       ...(Object.keys(providerOptions).length
         ? { providerOptions }
         : {}),
-      tools,
       maxOutputTokens: maxOutputTokensFor(
         config.provider,
         config.defaultMaxOutputTokens?.(params.reasoning),
       ),
-      stopWhen: sdk.stepCountIs(maxIterations),
       abortSignal: internalAbort.signal,
       reasoning:
         config.supportsReasoning === false
@@ -763,6 +775,12 @@ export async function streamAiSdk(
       // where it is classified and the caller reports it once
       // (MIKE-BACKEND-C). Every failure still arrives through fullStream.
       onError: () => {},
+    };
+    const result = sdk.streamText({
+      ...callOptions,
+      messages: cacheHints.messages,
+      tools,
+      stopWhen: sdk.stepCountIs(maxIterations),
       ...(config.courtlistenerCitationReminder ||
       params.finishWithoutToolsOnLastStep
         ? {
@@ -794,24 +812,50 @@ export async function streamAiSdk(
         : {}),
     });
 
+    const logRaw = (payload: unknown) => {
+      logRawLlmStream({
+        provider: config.provider,
+        model: config.modelId,
+        iteration: Math.max(0, iteration - 1),
+        label: "ai_sdk_raw",
+        payload,
+      });
+      rawStreamRecorder?.record({
+        iteration: Math.max(0, iteration - 1),
+        label: "ai_sdk_raw",
+        payload,
+      });
+    };
+    const forwardUsage = (
+      part: Extract<AiSdk.TextStreamPart<ToolSet>, { type: "finish-step" }>,
+      finishReason: string = part.finishReason,
+    ) => {
+      if (
+        part.usage.inputTokens === undefined &&
+        part.usage.outputTokens === undefined
+      ) {
+        return;
+      }
+      params.callbacks?.onUsage?.(
+        {
+          inputTokens: part.usage.inputTokens ?? 0,
+          outputTokens: part.usage.outputTokens ?? 0,
+          ...(part.usage.inputTokenDetails?.cacheReadTokens !== undefined &&
+            { cacheReadTokens: part.usage.inputTokenDetails.cacheReadTokens }),
+          ...(part.usage.inputTokenDetails?.cacheWriteTokens !== undefined &&
+            { cacheWriteTokens: part.usage.inputTokenDetails.cacheWriteTokens }),
+        },
+        finishReason,
+      );
+    };
+
     for await (const part of result.stream) {
       switch (part.type) {
         case "start-step":
           iteration += 1;
           break;
         case "raw":
-          logRawLlmStream({
-            provider: config.provider,
-            model: config.modelId,
-            iteration: Math.max(0, iteration - 1),
-            label: "ai_sdk_raw",
-            payload: part.rawValue,
-          });
-          rawStreamRecorder?.record({
-            iteration: Math.max(0, iteration - 1),
-            label: "ai_sdk_raw",
-            payload: part.rawValue,
-          });
+          logRaw(part.rawValue);
           break;
         case "text-delta":
           fullText += part.text;
@@ -827,6 +871,14 @@ export async function streamAiSdk(
         case "reasoning-end":
           if (openReasoningBlocks.delete(part.id)) {
             params.callbacks?.onReasoningBlockEnd?.();
+          }
+          break;
+        case "tool-input-start":
+          if (!part.providerExecuted) {
+            params.callbacks?.onToolInputStart?.({
+              id: part.id,
+              name: part.toolName,
+            });
           }
           break;
         case "tool-call": {
@@ -880,22 +932,7 @@ export async function streamAiSdk(
           }
           break;
         case "finish-step":
-          if (
-            part.usage.inputTokens !== undefined ||
-            part.usage.outputTokens !== undefined
-          ) {
-            params.callbacks?.onUsage?.(
-              {
-                inputTokens: part.usage.inputTokens ?? 0,
-                outputTokens: part.usage.outputTokens ?? 0,
-                ...(part.usage.inputTokenDetails?.cacheReadTokens !== undefined &&
-                  { cacheReadTokens: part.usage.inputTokenDetails.cacheReadTokens }),
-                ...(part.usage.inputTokenDetails?.cacheWriteTokens !== undefined &&
-                  { cacheWriteTokens: part.usage.inputTokenDetails.cacheWriteTokens }),
-              },
-              part.finishReason,
-            );
-          }
+          forwardUsage(part);
           lastFinishReason = part.finishReason;
           lastRawFinishReason = part.rawFinishReason;
           break;
@@ -958,6 +995,120 @@ export async function streamAiSdk(
       fullText += notice;
       if (params.callbacks?.onStopNotice) params.callbacks.onStopNotice(notice);
       else params.callbacks?.onContentDelta?.(notice);
+    }
+
+    // Only an answer the model finished on its own is checked: one cut off
+    // or halted is already explained by its notice. A run whose last step
+    // had to be tool-free has no step left for one.
+    const followUp =
+      !notice &&
+      lastFinishReason === "stop" &&
+      !(params.finishWithoutToolsOnLastStep && iteration >= maxIterations)
+        ? params.followUp?.(fullText)
+        : null;
+    if (followUp && functionTools?.[followUp.tool]) {
+      try {
+        const answerMessages = await result.responseMessages;
+        // The provider's own search runs wherever it is defined, so it is
+        // defined only when the answer's history already holds its calls.
+        const searched = answerMessages.some(
+          (message) =>
+            message.role === "assistant" &&
+            Array.isArray(message.content) &&
+            message.content.some(
+              (part) =>
+                part.type === "tool-call" &&
+                part.toolName === PROVIDER_WEB_SEARCH_TOOL,
+            ),
+        );
+        const followUpTools = toAiSdkTools(
+          params.tools ?? [],
+          params.runTools,
+          sdk,
+          (error) => {
+            runToolsFailure.first ??= { error };
+            internalAbort.abort();
+          },
+          inputChecker,
+          (name) => name === followUp.tool,
+        );
+        const followUpResult = sdk.streamText({
+          ...callOptions,
+          messages: [
+            ...cacheHints.messages,
+            ...answerMessages,
+            { role: "user", content: followUp.instruction },
+          ],
+          tools:
+            webSearch && searched
+              ? { ...followUpTools, [PROVIDER_WEB_SEARCH_TOOL]: webSearch.tool }
+              : followUpTools,
+          // The step's tool runs; the model is not asked again.
+          stopWhen: sdk.stepCountIs(1),
+        });
+        // Only the step's own tool and its usage are forwarded: its text
+        // and reasoning come after the finished answer and are not part of
+        // it, and no other tool runs in it.
+        for await (const part of followUpResult.stream) {
+          const ownTool =
+            "toolName" in part &&
+            part.toolName === followUp.tool &&
+            !part.providerExecuted;
+          switch (part.type) {
+            case "start-step":
+              iteration += 1;
+              break;
+            case "raw":
+              logRaw(part.rawValue);
+              break;
+            case "tool-input-start":
+              if (ownTool) {
+                params.callbacks?.onToolInputStart?.({
+                  id: part.id,
+                  name: part.toolName,
+                });
+              }
+              break;
+            case "tool-call":
+              if (ownTool) {
+                params.callbacks?.onToolCallStart?.({
+                  id: part.toolCallId,
+                  name: part.toolName,
+                  input: normalizeToolInput(part.input),
+                  ...(part.invalid ? { invalid: true as const } : {}),
+                });
+              }
+              break;
+            case "finish-step":
+              forwardUsage(part, FOLLOW_UP_FINISH_REASON);
+              break;
+            case "tool-error":
+              if (
+                part.providerExecuted ||
+                (part as { dynamic?: boolean }).dynamic === true
+              ) {
+                break;
+              }
+              throw part.error;
+            case "error":
+              throw part.error;
+            case "abort": {
+              const error = new Error(part.reason || "Stream aborted.");
+              error.name = "AbortError";
+              throw error;
+            }
+          }
+        }
+      } catch (error) {
+        // A stop the user asked for still ends the turn. Any other failure
+        // leaves the finished answer as it is.
+        if (params.abortSignal?.aborted) throw error;
+        runToolsFailure.first = null;
+        logEvent("warn", "llm/follow-up", "follow-up step failed; answer kept", {
+          provider: config.provider,
+          category: safeError(error).category,
+        });
+      }
     }
     await rawStreamRecorder?.flush("completed");
     return { fullText };

@@ -89,7 +89,7 @@ describe("AppSidebar account dropdown", () => {
     const assistant = screen.getByRole("button", { name: "Assistant" });
     const ide = screen.getByRole("button", { name: "IDE" });
 
-    expect(assistant.parentElement?.nextElementSibling).toContainElement(ide);
+    expect(assistant.nextElementSibling).toBe(ide);
   });
 
   it("shows a recovery toast when sign out fails", async () => {
@@ -211,13 +211,19 @@ describe("AppSidebar account dropdown", () => {
     { isOpen: true, toggleName: "Close sidebar" },
     { isOpen: false, toggleName: "Open sidebar" },
   ])(
-    "keeps the header row at a fixed height when isOpen is $isOpen",
+    "keeps the header row at its controls' height, inside the sidebar's padding, when isOpen is $isOpen",
     ({ isOpen, toggleName }) => {
-      render(<AppSidebar isOpen={isOpen} onToggle={vi.fn()} />);
+      const { container } = render(
+        <AppSidebar isOpen={isOpen} onToggle={vi.fn()} />,
+      );
 
-      expect(
-        screen.getByRole("button", { name: toggleName }).parentElement,
-      ).toHaveClass("h-11", "shrink-0");
+      const header = screen.getByRole("button", { name: toggleName })
+        .parentElement!;
+      // Fixed, so the name dropping to two lines while the sidebar opens
+      // does not push everything below it down for a moment.
+      expect(header).toHaveClass("h-7", "shrink-0");
+      // One inset all round: the header needs no height of its own.
+      expect(container.querySelector(".p-1\\.5")).toContainElement(header);
     },
   );
 
@@ -227,7 +233,7 @@ describe("AppSidebar account dropdown", () => {
       render(<AppSidebar isOpen={isOpen} onToggle={vi.fn()} />);
 
       expect(screen.getByRole("button", { name: "Account menu" })).toHaveClass(
-        "h-9",
+        "h-7",
         "shrink-0",
       );
     },
@@ -258,7 +264,7 @@ describe("AppSidebar account dropdown", () => {
     expect(listProjectChats).not.toHaveBeenCalledWith("other-project");
   });
 
-  it("gives the recent projects list more height while a project is expanded", async () => {
+  it("gives the recent projects list more room while a project is expanded", async () => {
     const user = userEvent.setup();
     vi.mocked(listProjectsPage).mockResolvedValue([
       { id: "open-project", name: "Open matter" },
@@ -270,11 +276,13 @@ describe("AppSidebar account dropdown", () => {
       name: "Hide recent chats and reviews in Open matter",
     });
     const list = toggle.closest(".overflow-y-auto");
-    expect(list).toHaveClass("h-64");
+    expect(list).toHaveClass("max-h-64");
+    expect(list).not.toHaveClass("h-64");
 
     await user.click(toggle);
 
-    expect(list).toHaveClass("h-44");
+    expect(list).toHaveClass("max-h-44");
+    expect(list).not.toHaveClass("h-44");
   });
 
   it("fades contents in when a sidebar that loaded closed is opened", () => {

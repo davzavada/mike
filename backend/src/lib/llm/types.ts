@@ -72,9 +72,19 @@ export type StreamCallbacks = {
     onContentDelta?: (text: string) => void;
     /** Server-authored terminal warning, outside any hidden model citation block. */
     onStopNotice?: (text: string) => void;
+    /**
+     * The model began writing a tool call: its name is known, its arguments
+     * are still streaming. Not every provider reports this; `onToolCallStart`
+     * always follows with the same id once the call is complete.
+     */
+    onToolInputStart?: (call: { id: string; name: string }) => void;
     onToolCallStart?: (call: NormalizedToolCall) => void;
     onWebSearch?: (event: ProviderWebSearchEvent) => void;
     /** Skipped when the provider reports no usage. */
+    /**
+     * Each step's tokens. `finishReason` is the step's own, or "follow-up"
+     * for the step a `followUp` runs after the finished answer.
+     */
     onUsage?: (usage: TokenUsage, finishReason: string) => void;
 };
 
@@ -218,7 +228,17 @@ export type StreamChatParams = {
      * limit ends with an answer instead of an unanswered tool call.
      */
     finishWithoutToolsOnLastStep?: boolean;
+    /**
+     * Checked once, with the answer's text, when the model finishes on its
+     * own. A follow-up it returns runs one more step in the same
+     * conversation: `instruction` is sent as a user message and only `tool`
+     * runs. That step's text and reasoning are not shown or kept, since the
+     * answer has already been written.
+     */
+    followUp?: (answer: string) => StreamFollowUp | null;
 };
+
+export type StreamFollowUp = { instruction: string; tool: string };
 
 export type StreamChatResult = {
     fullText: string;

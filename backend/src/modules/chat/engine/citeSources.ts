@@ -537,3 +537,59 @@ export function createCitationRecorder(kind: CitationKind) {
 }
 
 export type CitationRecorder = ReturnType<typeof createCitationRecorder>;
+
+/**
+ * The answer's citation markers, [1] or [1, 2]: the same pattern the web app
+ * turns into citation links (preprocessCitations in
+ * frontend/src/app/components/assistant/message/citationUtils.ts).
+ */
+const CITATION_MARKER = /\[(\d+(?:,\s*\d+)*)\]/g;
+
+/**
+ * The refs the answer's markers use that no recorded citation backs, in
+ * ascending order. A number past the citation cap ([2024]) is not a ref.
+ */
+export function unrecordedMarkerRefs(
+  answer: string,
+  recorded: Iterable<number>,
+): number[] {
+  const known = new Set(recorded);
+  const missing = new Set<number>();
+  for (const [, refs] of answer.matchAll(CITATION_MARKER)) {
+    for (const ref of refs.split(",").map(Number)) {
+      if (ref >= 1 && ref <= MAX_CITATIONS && !known.has(ref)) missing.add(ref);
+    }
+  }
+  return [...missing].sort((a, b) => a - b);
+}
+
+/**
+ * What the model is told when its finished answer has unrecorded markers.
+ * A notice, not an order: a bracketed number can be part of a quote, a
+ * paragraph reference or a footnote rather than a citation marker.
+ */
+export function unrecordedMarkersNotice(refs: number[]): string {
+  const markers = refs.map((ref) => `[${ref}]`).join(", ");
+  const one = refs.length === 1;
+  return `Note: your answer contains ${markers}, which ${one ? "looks like a citation marker" : "look like citation markers"}, but no citation was recorded for ${one ? "it" : "them"}. If ${one ? "it is a citation" : "any of them are citations"}, record ${one ? "it" : "those"} with ${CITE_SOURCES_TOOL_NAME} under the same ref, quoting the passage that supports the claim. If ${one ? "it is" : "they are"} part of the text for another reason, such as a quote, a paragraph reference or a footnote, no action is needed. Your answer has already been sent, so do not write anything further.`;
+}
+
+/**
+ * A cite_sources input limited to adding `refs`. After the answer has been
+ * sent, a late call may only record what it left out: dropping or replacing
+ * a citation would change one the user has already seen.
+ */
+export function onlyAddingRefs(
+  input: unknown,
+  refs: ReadonlySet<number>,
+): { citations: unknown[] } {
+  const entries = (input as { citations?: unknown } | null)?.citations;
+  return {
+    citations: Array.isArray(entries)
+      ? entries.filter((entry) => {
+          const ref = (entry as { ref?: unknown } | null)?.ref;
+          return typeof ref === "number" && refs.has(ref);
+        })
+      : [],
+  };
+}

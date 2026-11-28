@@ -106,6 +106,74 @@ describe("runLLMStream citation streaming", () => {
     expect(result.events.map((e) => e.type)).not.toContain("citations_recorded_start");
   });
 
+  it("opens the citations step when the model starts writing cite_sources, once", async () => {
+    vi.mocked(runToolCalls).mockResolvedValue(emptyToolCallBatchResult());
+    const frames: string[] = [];
+    const startFrame = `data: ${JSON.stringify({ type: "citations_recorded_start" })}\n\n`;
+    const starts = () => frames.filter((f) => f === startFrame);
+    let openedAtInputStart: string[] = [];
+    streamChatWithTools.mockImplementation(async (params: StreamChatParams) => {
+      const call = { id: "cite", name: "cite_sources", input: { citations: [] } };
+      params.callbacks?.onContentDelta?.("Checking the lease.");
+      // The arguments are still streaming: only the id and name are known.
+      params.callbacks?.onToolInputStart?.({ id: call.id, name: call.name });
+      openedAtInputStart = starts();
+      params.callbacks?.onToolCallStart?.(call);
+      await params.runTools?.([call]);
+      return { fullText: "" };
+    });
+    const result = await runLLMStream({
+      model: "gemini-3.8-flash",
+      apiMessages: [{ role: "user", content: "When can the lease end?" }],
+      docStore: new Map(),
+      docIndex: {},
+      userId: "u1",
+      db: {} as never,
+      write: (line: string) => void frames.push(line),
+      nonce: "turnnonce",
+    } as Parameters<typeof runLLMStream>[0]);
+
+    // The step itself opens while the quotes are written, not a placeholder.
+    expect(openedAtInputStart).toEqual([startFrame]);
+    expect(frames.some((f) => f.includes('"type":"tool_call_start"'))).toBe(false);
+    // Neither the completed call nor running it opens the step a second time.
+    expect(starts()).toEqual([startFrame]);
+    // Text written before the call is a finished part of the turn by then.
+    expect(result.events[0]).toEqual({ type: "content", text: "Checking the lease." });
+    // The call's result completes the step it opened.
+    expect(frames.indexOf(startFrame)).toBeLessThan(
+      frames.findIndex((f) => f.includes('"type":"citations_recorded"')
+        && !f.includes("citations_recorded_start")),
+    );
+  });
+
+  it("announces any other tool with a placeholder when the model starts writing it", async () => {
+    vi.mocked(runToolCalls).mockResolvedValue(emptyToolCallBatchResult());
+    const frames: string[] = [];
+    streamChatWithTools.mockImplementation(async (params: StreamChatParams) => {
+      const call = { id: "read", name: "read_document", input: { doc_id: "doc-0" } };
+      params.callbacks?.onToolInputStart?.({ id: call.id, name: call.name });
+      params.callbacks?.onToolCallStart?.(call);
+      await params.runTools?.([call]);
+      return { fullText: "" };
+    });
+    await runLLMStream({
+      model: "gemini-3.8-flash",
+      apiMessages: [{ role: "user", content: "Read the lease." }],
+      docStore: new Map(),
+      docIndex: {},
+      userId: "u1",
+      db: {} as never,
+      write: (line: string) => void frames.push(line),
+      nonce: "turnnonce",
+    } as Parameters<typeof runLLMStream>[0]);
+
+    expect(frames.filter((f) => f.includes('"type":"tool_call_start"'))).toEqual([
+      `data: ${JSON.stringify({ type: "tool_call_start", name: "read_document" })}\n\n`,
+    ]);
+    expect(frames.some((f) => f.includes("citations_recorded_start"))).toBe(false);
+  });
+
   it("checks same-batch citations after an edit updates the source", async () => {
     const before = "Only the landlord may extend the term.";
     const after = "Either party can request a mediation.";
@@ -210,5 +278,133 @@ describe("runLLMStream citation streaming", () => {
     expect(result.events).toContainEqual(expect.objectContaining({ removed_refs: [1, 2] }));
     const replayed = citationFrames.filter((f) => f.replay?.() ?? true);
     expect(replayed.map((f) => JSON.parse(f.line.slice(6)).status)).toEqual(["final"]);
+  });
+});
+
+describe("runLLMStream unrecorded citation markers", () => {
+  const source = "Either party may terminate on 30 days' written notice.";
+  const citeCall = {
+    id: "late-cite",
+    name: "cite_sources",
+    input: { citations: [{ ref: 1, doc_id: "doc-0", quotes: [{ quote: "Either party may terminate on 30 days' written notice" }] }] },
+  };
+  const run = (frames: string[] = []) =>
+    runLLMStream({
+      model: "gemini-3.8-flash",
+      apiMessages: [{ role: "user", content: "When can the lease end?" }],
+      docStore: new Map([
+        ["doc-0", { storage_path: "", file_type: "txt", filename: "Lease.txt", inline_text: source }],
+      ]),
+      docIndex: {},
+      userId: "u1",
+      db: {} as never,
+      write: (line: string) => void frames.push(line),
+    } as Parameters<typeof runLLMStream>[0]);
+
+  it("asks the model to record markers the finished answer left without a citation", async () => {
+    vi.mocked(runToolCalls).mockResolvedValue(emptyToolCallBatchResult());
+    const logged = vi.spyOn(console, "log").mockImplementation(() => {});
+    let followUp: ReturnType<NonNullable<StreamChatParams["followUp"]>> = null;
+    streamChatWithTools.mockImplementationOnce(async (params: StreamChatParams) => {
+      const text = "Either party may terminate [1].";
+      params.callbacks?.onContentDelta?.(text);
+      // What the adapter does when the model finishes: check, then run the
+      // follow-up step's cite_sources call.
+      followUp = params.followUp!(text);
+      await params.runTools!([citeCall]);
+      return { fullText: text };
+    });
+    const frames: string[] = [];
+
+    const result = await run(frames);
+
+    expect(followUp).toEqual({
+      tool: "cite_sources",
+      instruction: expect.stringContaining("your answer contains [1], which looks like a citation marker"),
+    });
+    const final = frames
+      .filter((f) => f.includes('"type":"citations"'))
+      .map((f) => JSON.parse(f.slice(6)))
+      .at(-1);
+    expect(final).toMatchObject({ status: "final", citations: [{ ref: 1, verified: true }] });
+    expect(result.citations).toMatchObject([{ ref: 1, verified: true }]);
+    expect(logged).toHaveBeenCalledWith(
+      "[chat/citations] answer used markers without recorded citations",
+      { unrecorded: 1, still_unrecorded: 0, sources: "documents" },
+    );
+    logged.mockRestore();
+  });
+
+  it("logs the markers a follow-up could not record", async () => {
+    vi.mocked(runToolCalls).mockResolvedValue(emptyToolCallBatchResult());
+    const logged = vi.spyOn(console, "log").mockImplementation(() => {});
+    streamChatWithTools.mockImplementationOnce(async (params: StreamChatParams) => {
+      const text = "Either party may terminate [1], with notice [2].";
+      params.callbacks?.onContentDelta?.(text);
+      params.followUp!(text);
+      await params.runTools!([citeCall]);
+      return { fullText: text };
+    });
+
+    await run();
+
+    expect(logged).toHaveBeenCalledWith(
+      "[chat/citations] answer used markers without recorded citations",
+      { unrecorded: 2, still_unrecorded: 1, sources: "documents" },
+    );
+    logged.mockRestore();
+  });
+
+  it("lets a call made after the answer add only the missing refs", async () => {
+    vi.mocked(runToolCalls).mockResolvedValue(emptyToolCallBatchResult());
+    const shown = { ref: 1, doc_id: "doc-0", quotes: [{ quote: "Either party may terminate" }] };
+    streamChatWithTools.mockImplementationOnce(async (params: StreamChatParams) => {
+      await params.runTools!([{ id: "cite", name: "cite_sources", input: { citations: [shown] } }]);
+      const text = "Either party may terminate [1] on 30 days' written notice [2].";
+      params.callbacks?.onContentDelta?.(text);
+      params.followUp!(text);
+      // The late call also tries to withdraw [1] and to replace its source.
+      await params.runTools!([{
+        id: "late",
+        name: "cite_sources",
+        input: {
+          drop_refs: [1],
+          citations: [
+            { ref: 1, doc_id: "doc-0", quotes: [{ quote: "written notice" }] },
+            { ref: 2, doc_id: "doc-0", quotes: [{ quote: "30 days' written notice" }] },
+          ],
+        },
+      }]);
+      return { fullText: text };
+    });
+
+    const result = await run();
+
+    expect(result.citations).toMatchObject([
+      { ref: 1, quote: "Either party may terminate", verified: true },
+      { ref: 2, quote: "30 days' written notice", verified: true },
+    ]);
+  });
+
+  it("asks for nothing when every marker has a recorded citation", async () => {
+    vi.mocked(runToolCalls).mockResolvedValue(emptyToolCallBatchResult());
+    const logged = vi.spyOn(console, "log").mockImplementation(() => {});
+    let followUp: unknown = "unchecked";
+    streamChatWithTools.mockImplementationOnce(async (params: StreamChatParams) => {
+      await params.runTools!([citeCall]);
+      const text = "Either party may terminate [1].";
+      params.callbacks?.onContentDelta?.(text);
+      followUp = params.followUp!(text);
+      return { fullText: text };
+    });
+
+    await run();
+
+    expect(followUp).toBeNull();
+    expect(logged).not.toHaveBeenCalledWith(
+      "[chat/citations] answer used markers without recorded citations",
+      expect.anything(),
+    );
+    logged.mockRestore();
   });
 });

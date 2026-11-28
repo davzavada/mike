@@ -4,7 +4,10 @@ import {
   CITE_DOCUMENTS_TOOL,
   createCitationRecorder,
   documentCitations,
+  unrecordedMarkersNotice,
+  onlyAddingRefs,
   tabularCitations,
+  unrecordedMarkerRefs,
 } from "../citeSources";
 import { loadToolInputChecker } from "../../../../lib/llm/toolInputValidation";
 import { citationReminder } from "../tools/documentOps";
@@ -334,5 +337,51 @@ describe("cite_sources in a tabular review", () => {
       { ref: 3, error: "COL:1 ROW:1 is empty." },
       { ref: 4, error: expect.stringContaining("col_index and row_index") },
     ]);
+  });
+});
+
+describe("unrecordedMarkerRefs", () => {
+  it("lists each marker ref without a recorded citation once, in order", () => {
+    expect(
+      unrecordedMarkerRefs("A [3]. B [1, 2]. C [3] and [2,4].", [1]),
+    ).toEqual([2, 3, 4]);
+  });
+
+  it("finds nothing when every marker is recorded, or there are none", () => {
+    expect(unrecordedMarkerRefs("A [1]. B [2].", [1, 2])).toEqual([]);
+    expect(unrecordedMarkerRefs("No markers here.", [])).toEqual([]);
+  });
+
+  it("does not read a number past the citation cap, or a non-number, as a ref", () => {
+    expect(unrecordedMarkerRefs("Decided in [2024]; see [0] and [a].", [])).toEqual([]);
+  });
+});
+
+describe("unrecordedMarkersNotice", () => {
+  it("names the markers and leaves it to the model whether they are citations", () => {
+    const one = unrecordedMarkersNotice([2]);
+    expect(one).toContain("your answer contains [2], which looks like a citation marker, but no citation was recorded for it.");
+    expect(one).toContain("If it is a citation, record it with cite_sources under the same ref");
+    expect(one).toContain("such as a quote, a paragraph reference or a footnote, no action is needed");
+    expect(one).toContain("do not write anything further");
+    expect(unrecordedMarkersNotice([2, 3])).toContain(
+      "contains [2], [3], which look like citation markers, but no citation was recorded for them. If any of them are citations, record those",
+    );
+  });
+});
+
+describe("onlyAddingRefs", () => {
+  it("keeps the entries for the given refs and drops withdrawals", () => {
+    expect(
+      onlyAddingRefs(
+        { drop_refs: [1], citations: [{ ref: 1 }, { ref: 2 }, { ref: "2" }, null, { ref: 3 }] },
+        new Set([2, 3]),
+      ),
+    ).toEqual({ citations: [{ ref: 2 }, { ref: 3 }] });
+  });
+
+  it("leaves nothing to record from an input without entries", () => {
+    expect(onlyAddingRefs({ drop_refs: [1] }, new Set([2]))).toEqual({ citations: [] });
+    expect(onlyAddingRefs(null, new Set([2]))).toEqual({ citations: [] });
   });
 });
