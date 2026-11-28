@@ -42,9 +42,11 @@ with `@anthropic-ai/claude-agent-sdk`, once per request:
   session between requests, and every call, a retry included, starts a new
   one. Claude Code's own request for a session title is switched off.
 - Mike asks for the summary of the model's thinking, as it does through the
-  API. Claude 5 models send none unless asked, and a model that thinks for
-  longer than `STREAM_CHUNK_TIMEOUT_MS` without sending anything is ended as
-  one that stopped responding.
+  API. Claude 5 models send none unless asked.
+- Claude Code streams a tool call's input as the model writes it
+  (`CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING`). Otherwise the API holds
+  the input back until it is complete, and a call that carries a whole
+  document is minutes in which nothing arrives.
 
 ## Plan usage
 
@@ -62,19 +64,41 @@ everything else keeps working.
 ## Deadlines and waiting
 
 A chat turn has the same silence limits as with any other provider
-(`STREAM_FIRST_CHUNK_TIMEOUT_MS`, `STREAM_CHUNK_TIMEOUT_MS`). Time a tool
-takes inside Claude Code does not count, and the model's request after a
-tool result gets the first-chunk limit again.
+(`STREAM_FIRST_CHUNK_TIMEOUT_MS`, `STREAM_CHUNK_TIMEOUT_MS`), counted from
+the start of its Claude Code process. What counts as silence differs,
+because Claude Code reports on itself between the model's outputs
+(`backend/src/lib/llm/providerDeadlines.ts`):
+
+- Any message from the process renews the limit it is under: the API's
+  keep-alive pings while the model thinks, the notice it repeats while it
+  compacts a long conversation, the start of each request. Only a process
+  that sends nothing at all is ended as one that stopped responding.
+- When the API is overloaded, Claude Code says how long it waits before it
+  asks again. That wait is added to the first-chunk limit of the retry.
+- Time a tool takes inside Claude Code does not count, and the model's
+  request after the tool results gets the first-chunk limit again.
+
+None of these is output. A turn in which the model writes nothing for
+`STREAM_IDLE_TIMEOUT_MS`, five minutes by default, is still ended by the
+run's own idle limit.
 
 A call that is not streamed (a chat title, a tabular review cell) is ended
-after `STREAM_IDLE_TIMEOUT_MS`, five minutes by default, counted from the
-start of its Claude Code process. The process is stopped and its slot freed.
+after `STREAM_IDLE_TIMEOUT_MS`, counted from the start of its Claude Code
+process. The process is stopped and its slot freed.
 
-When every slot is taken, further requests wait. A waiting chat turn starts
-before waiting one-shot calls, because its wait counts against its
-first-chunk limit: a turn that waits longer than that fails with "Claude
-stopped responding". If that happens while a large tabular review runs or
-several people chat at once, raise `CLAUDE_CODE_MAX_CONCURRENCY`.
+When every slot is taken, further requests wait. The wait counts against no
+limit: a waiting turn starts when a slot is free, and a waiting chat turn
+starts before waiting one-shot calls. If turns wait noticeably while a large
+tabular review runs or several people chat at once, raise
+`CLAUDE_CODE_MAX_CONCURRENCY`.
+
+Claude Code runs the tool calls of one model message one after another, not
+side by side, so a turn that delegates to several subagents takes the sum of
+their times.
+
+A turn that uses up its tool-call rounds ends with what it has written and
+the same notice as through the API. Claude Code reports that limit as an
+error; Mike does not pass it on as one.
 
 ## Configuration
 

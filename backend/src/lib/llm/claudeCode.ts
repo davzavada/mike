@@ -43,6 +43,13 @@ export type ClaudeCodeRequest = {
   /** Tool-call rounds allowed before Claude Code stops. */
   maxTurns?: number;
   tools?: ClaudeCodeTools;
+  /**
+   * Bounds each Claude Code process from the moment it starts. Applied
+   * inside the wait for a slot, which is not the model's silence.
+   */
+  deadlines?: LanguageModelMiddleware;
+  /** Called while a streamed turn waits for a slot: it is queued, not hung. */
+  onWaiting?: () => void;
 };
 
 type SdkModel = Exclude<LanguageModel, string>;
@@ -56,6 +63,9 @@ type Waiter = {
 
 const waiters: Waiter[] = [];
 let running = 0;
+
+/** How often a turn that waits for a slot reports that it still does. */
+const SLOT_WAIT_REPORT_MS = 30_000;
 
 // Set while one of Mike's tools runs on behalf of a Claude Code process. A
 // request made from inside it (a delegated subagent) belongs to a turn that
@@ -71,9 +81,20 @@ const insideToolCall = new AsyncLocalStorage<true>();
 async function acquireSlot(
   signal: AbortSignal | undefined,
   interactive: boolean,
+  onWaiting?: () => void,
 ): Promise<() => void> {
   if (insideToolCall.getStore()) return () => {};
-  await waitForSlot(signal, interactive);
+  // Every slot is held by a call with deadlines of its own, so one will come
+  // back. Saying so keeps a queued turn from being ended as an idle one.
+  const waiting = onWaiting
+    ? setInterval(onWaiting, SLOT_WAIT_REPORT_MS)
+    : undefined;
+  waiting?.unref?.();
+  try {
+    await waitForSlot(signal, interactive);
+  } finally {
+    clearInterval(waiting);
+  }
   return releaseSlot;
 }
 
@@ -150,7 +171,10 @@ function subscriptionError(error: unknown, kinds: ErrorKinds): unknown {
   return error;
 }
 
-function slotLimit(kinds: ErrorKinds): LanguageModelMiddleware {
+function slotLimit(
+  kinds: ErrorKinds,
+  onWaiting?: () => void,
+): LanguageModelMiddleware {
   return {
     wrapGenerate: async ({ model, params }) => {
       const giveBack = await acquireSlot(params.abortSignal, false);
@@ -199,7 +223,7 @@ function slotLimit(kinds: ErrorKinds): LanguageModelMiddleware {
       }
     },
     wrapStream: async ({ doStream, params }) => {
-      const giveBack = await acquireSlot(params.abortSignal, true);
+      const giveBack = await acquireSlot(params.abortSignal, true, onWaiting);
       let released = false;
       const release = () => {
         if (released) return;
@@ -292,6 +316,84 @@ function summarizedThinking(): LanguageModelMiddleware {
   };
 }
 
+/** The Agent SDK's result for a run that used up its `maxTurns`. */
+function isTurnLimitResult(raw: unknown): raw is {
+  usage?: Record<string, unknown>;
+} {
+  return (
+    !!raw &&
+    typeof raw === "object" &&
+    (raw as { type?: unknown }).type === "result" &&
+    (raw as { subtype?: unknown }).subtype === "error_max_turns"
+  );
+}
+
+const TURN_LIMIT_MESSAGE = /reached maximum number of turns/i;
+
+/** How the stream names a turn that ended at its tool-call round limit. */
+export const TURN_LIMIT_FINISH_REASON = "error_max_turns";
+
+/**
+ * Claude Code reports a run that used up its tool-call rounds as an error,
+ * and the provider turns that into a failed stream: the answer written so
+ * far would end as a provider failure. Through the API the same limit ends
+ * the turn with what it has and a notice (stopNotice), so the stream ends
+ * here the same way, with a finish that names the limit.
+ */
+function turnLimitAsFinish(): LanguageModelMiddleware {
+  const count = (value: unknown) => (typeof value === "number" ? value : 0);
+  return {
+    wrapStream: async ({ doStream }) => {
+      const result = await doStream();
+      let limit: { usage?: Record<string, unknown> } | null = null;
+      return {
+        ...result,
+        stream: result.stream.pipeThrough(
+          new TransformStream({
+            transform(part, controller) {
+              if (part.type === "raw" && isTurnLimitResult(part.rawValue)) {
+                limit = part.rawValue;
+              }
+              const message =
+                part.type === "error" && part.error instanceof Error
+                  ? part.error.message
+                  : "";
+              if (
+                part.type !== "error" ||
+                !(limit || TURN_LIMIT_MESSAGE.test(message))
+              ) {
+                controller.enqueue(part);
+                return;
+              }
+              const usage = limit?.usage ?? {};
+              const cacheRead = count(usage.cache_read_input_tokens);
+              const cacheWrite = count(usage.cache_creation_input_tokens);
+              const input = count(usage.input_tokens);
+              controller.enqueue({
+                type: "finish",
+                finishReason: { unified: "other", raw: TURN_LIMIT_FINISH_REASON },
+                usage: {
+                  inputTokens: {
+                    total: input + cacheRead + cacheWrite,
+                    noCache: input,
+                    cacheRead,
+                    cacheWrite,
+                  },
+                  outputTokens: {
+                    total: count(usage.output_tokens),
+                    text: undefined,
+                    reasoning: undefined,
+                  },
+                },
+              });
+            },
+          }),
+        ),
+      };
+    },
+  };
+}
+
 async function toolServer(tools: ClaudeCodeTools) {
   // Loaded as ES modules, like the Agent SDK that will drive this server:
   // it must be handed the same build of the MCP classes it uses itself.
@@ -357,6 +459,11 @@ function subprocessEnv(configDir: string): Record<string, string | undefined> {
     // repeats the conversation. Nothing shows that name, and the request
     // would count against the person's plan on every turn.
     CLAUDE_CODE_DISABLE_TERMINAL_TITLE: "1",
+    // Stream a tool call's input as the model writes it. Without this the
+    // API holds the input back until it is complete, and a call that carries
+    // a whole document arrives after minutes in which the stream is silent:
+    // providerDeadlines ends that as a provider that stopped responding.
+    CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING: "1",
   };
 }
 
@@ -413,6 +520,13 @@ export async function createClaudeCodeModel(
   return wrapLanguageModel({
     // Stands for the model's identity only; sessionPerCall answers the calls.
     model: await fresh(),
-    middleware: [summarizedThinking(), slotLimit(claudeCode), sessionPerCall],
+    // Outermost first: a call waits for its slot before its deadlines start.
+    middleware: [
+      summarizedThinking(),
+      slotLimit(claudeCode, request.onWaiting),
+      ...(request.deadlines ? [request.deadlines] : []),
+      turnLimitAsFinish(),
+      sessionPerCall,
+    ],
   }) as SdkModel;
 }

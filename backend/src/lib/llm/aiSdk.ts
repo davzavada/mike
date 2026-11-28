@@ -29,7 +29,11 @@ import {
   type ProviderKeySource,
 } from "./providerErrors";
 import { createRawLlmStreamRecorder, logRawLlmStream } from "./rawStreamLog";
-import type { ClaudeCodeRequest, ClaudeCodeTools } from "./claudeCode";
+import {
+  TURN_LIMIT_FINISH_REASON,
+  type ClaudeCodeRequest,
+  type ClaudeCodeTools,
+} from "./claudeCode";
 import { randomUUID } from "node:crypto";
 import { logEvent } from "../log";
 import { safeError } from "../safeError";
@@ -115,8 +119,12 @@ export function stopNotice(
   }
   // Reaching the last round while still asking for tools means the model was
   // mid-work when stopWhen cut it off. Reaching it on "stop" means it had
-  // finished and the round count is a coincidence, so say nothing.
-  if (iterations >= maxIterations && finishReason !== "stop") {
+  // finished and the round count is a coincidence, so say nothing. An agent
+  // model counts its own rounds, in one step, and names the limit itself.
+  if (
+    rawFinishReason === TURN_LIMIT_FINISH_REASON ||
+    (iterations >= maxIterations && finishReason !== "stop")
+  ) {
     return `\n\n_Stopped after ${maxIterations} tool-call rounds without finishing. This is a step limit, not a length limit — narrowing the request, or pointing at fewer documents, usually resolves it._`;
   }
   return "";
@@ -720,6 +728,9 @@ export async function streamAiSdk(
     // to the interface and to the model, whose prompt otherwise promises it.
     const searchUnavailable = !!config.agentModel && !!params.providerWebSearch;
     if (searchUnavailable) emitWebSearch({ kind: "unavailable" });
+    const deadlines = providerDeadlines(params.callbacks?.onActivity, {
+      toolsRunInProvider: !!config.agentModel,
+    });
     const model = config.agentModel
       ? await config.agentModel({
           systemPrompt: searchUnavailable
@@ -733,6 +744,10 @@ export async function streamAiSdk(
             inputChecker,
             params.callbacks?.onToolCallStart,
           ),
+          // An agent model queues its calls (one process each). It applies
+          // the deadlines itself, once a call has left the queue.
+          deadlines,
+          onWaiting: params.callbacks?.onActivity,
         })
       : config.model;
     // Everything but the conversation and its step limits, shared by the
@@ -741,12 +756,9 @@ export async function streamAiSdk(
     const callOptions = {
       model: sdk.wrapLanguageModel({
         model,
-        middleware: [
-          providerDeadlines(params.callbacks?.onActivity, {
-            toolsRunInProvider: !!config.agentModel,
-          }),
-          quotaRefusalRetries(),
-        ],
+        middleware: config.agentModel
+          ? [quotaRefusalRetries()]
+          : [deadlines, quotaRefusalRetries()],
       }),
       // An agent model takes the system prompt as its own, above.
       system: config.agentModel ? undefined : params.systemPrompt,
